@@ -1,6 +1,6 @@
 {
   "week": "2026-W37",
-  "crawled_at": "2026-09-07T04:17:17Z",
+  "crawled_at": "2026-09-07T04:17:20Z",
   "new_repos": [
     {
       "id": 1354310030,
@@ -613,12 +613,12 @@
       "full_name": "aaronyi97/image-story-video-wizard",
       "description": "A confirmation-gated Codex and WorkBuddy skill for audio-first image-story video production.",
       "language": "Python",
-      "stars": 299,
+      "stars": 300,
       "forks": 41,
       "archived": false,
       "disabled": false,
       "created_at": "2026-09-02T12:35:50Z",
-      "updated_at": "2026-09-07T01:53:38Z",
+      "updated_at": "2026-09-07T04:17:19Z",
       "pushed_at": "2026-09-02T13:12:58Z",
       "topics": [],
       "license": "MIT",
@@ -1298,12 +1298,12 @@
       "full_name": "EverettFish/holo-card-studio",
       "description": "Turn the user's description or uploaded reference into a finished, editable Blender card and an interactive Three.js page. Preserve the requested subject, style, typography and destination. This skill contains code and text only; generated artwork belongs in the user's output project.",
       "language": "Python",
-      "stars": 161,
+      "stars": 162,
       "forks": 12,
       "archived": false,
       "disabled": false,
       "created_at": "2026-09-07T00:41:18Z",
-      "updated_at": "2026-09-07T04:15:53Z",
+      "updated_at": "2026-09-07T04:17:21Z",
       "pushed_at": "2026-09-07T01:47:01Z",
       "topics": [],
       "license": "NOASSERTION",
@@ -2203,7 +2203,7 @@
       "disabled": false,
       "created_at": "2026-09-03T20:33:04Z",
       "updated_at": "2026-09-07T03:53:25Z",
-      "pushed_at": "2026-09-07T03:53:22Z",
+      "pushed_at": "2026-09-07T04:17:19Z",
       "topics": [
         "auto-withdraw-bot",
         "auto-withdraw-script",
@@ -5163,12 +5163,12 @@
       "full_name": "TheAlgorithms/Python",
       "description": "All Algorithms implemented in Python",
       "language": "Python",
-      "stars": 224324,
+      "stars": 224325,
       "forks": 51023,
       "archived": false,
       "disabled": false,
       "created_at": "2016-07-16T09:44:01Z",
-      "updated_at": "2026-09-07T03:58:02Z",
+      "updated_at": "2026-09-07T04:17:24Z",
       "pushed_at": "2026-09-06T21:24:03Z",
       "topics": [
         "algorithm",
@@ -5977,12 +5977,12 @@
       "full_name": "clash-verge-rev/clash-verge-rev",
       "description": "A modern GUI client based on Tauri, designed to run in Windows, macOS and Linux for tailored proxy experience",
       "language": "TypeScript",
-      "stars": 142691,
+      "stars": 142692,
       "forks": 10262,
       "archived": false,
       "disabled": false,
       "created_at": "2023-11-21T18:24:03Z",
-      "updated_at": "2026-09-07T04:09:16Z",
+      "updated_at": "2026-09-07T04:17:24Z",
       "pushed_at": "2026-09-07T02:04:12Z",
       "topics": [
         "clash",
@@ -12007,10 +12007,10 @@
     "stale_cache_hits": 0,
     "rate_limit_limit": 5000,
     "rate_limit_remaining": 4574,
-    "rate_limit_reset": 1788758246,
+    "rate_limit_reset": 1788758249,
     "rate_limit_resource": "core",
     "partial_failures": [],
-    "run_id": "34082524357",
+    "run_id": "34082521901",
     "crawl_window": {
       "since": "2026-08-31",
       "until": "2026-09-07"
@@ -12037,6 +12037,6 @@
     "snapshot_path": "data/snapshots/2026-W37-stars.json",
     "source_refresh_policy": "reuse-same-day",
     "crawler_code_sha": "b3299b7eddf262f648b46bf5fda446f177a1053de6836a2719bce881ab098da5",
-    "artifact_checksum": "6fb3e4bfb9a21a9539f5696cb181d1005eddd18a1b25361e3584e8e130559779"
+    "artifact_checksum": "dd9dc1f844dd8dbbcc99311748b42a091f1193834e909963fac5f3e3be0e7506"
   }
 }
