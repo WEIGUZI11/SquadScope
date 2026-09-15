@@ -1080,6 +1080,12 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertFalse(job["concurrency"]["cancel-in-progress"])
         checkout = next(s for s in job["steps"] if _uses_action(s, "actions/checkout"))
         self.assertEqual(checkout["with"]["ref"], "${{ github.event.repository.default_branch }}")
+        derive = next(s for s in job["steps"] if s.get("id") == "derive")
+        self.assertIn('SHORT_LOWER="${SHORT,,}"', derive["run"])
+        self.assertIn(
+            "article_url=https://claracle.com/weekly/${YEAR}/${SHORT_LOWER}/",
+            derive["run"],
+        )
 
         locate = next(s for s in job["steps"] if s.get("id") == "manifest-locate")
         locate_run = locate["run"]
@@ -1129,12 +1135,18 @@ class WorkflowConfigTests(unittest.TestCase):
             detect_job["outputs"]["article_sha256"], "${{ steps.detect.outputs.article_sha256 }}"
         )
         self.assertEqual(
+            detect_job["outputs"]["manifest_sha256"],
+            "${{ steps.detect.outputs.manifest_sha256 }}",
+        )
+        self.assertEqual(
             detect_job["outputs"]["dedup_status"], "${{ steps.dedup.outputs.dedup_status }}"
         )
 
         dedup = next(step for step in detect_job["steps"] if step.get("id") == "dedup")
         self.assertIn("ARTICLE_SHA256", dedup["env"])
+        self.assertIn("MANIFEST_SHA256", dedup["env"])
         self.assertIn("--article-sha256", dedup["run"])
+        self.assertIn("--manifest-sha256", dedup["run"])
 
         emit_receipt = next(
             step for step in detect_job["steps"] if step.get("name") == "Emit detect receipt"
@@ -1151,15 +1163,39 @@ class WorkflowConfigTests(unittest.TestCase):
             "podcast-dispatch-${{ needs.detect.outputs.week }}-${{ needs.detect.outputs.publish_run_id }}",
         )
         self.assertFalse(real_generation["concurrency"]["cancel-in-progress"])
-
+        locate = next(
+            step for step in real_generation["steps"] if step.get("id") == "manifest-locate"
+        )
+        self.assertIn("DETECT_MANIFEST_SHA256", locate["env"])
+        self.assertIn("Manifest SHA-256 mismatch", locate["run"])
         evidence = next(
             step
             for step in real_generation["steps"]
-            if step.get("name") == "Retain real generation evidence"
+            if step["name"] == "Retain real generation evidence"
         )
+        self.assertIn(
+            "steps.manifest-locate.outputs.manifest_sha256 || needs.detect.outputs.manifest_sha256",
+            evidence["env"]["MANIFEST_SHA256"],
+        )
+        self.assertIn(
+            "steps.manifest-locate.outputs.article_sha256 || needs.detect.outputs.article_sha256",
+            evidence["env"]["ARTICLE_SHA256"],
+        )
+
         self.assertIn("PODCASTER_RECEIPT_STATE", evidence["env"])
         self.assertIn("PODCAST_DISPATCH_RECEIPT::", evidence["run"])
         self.assertIn("Receipt state:", evidence["run"])
+        self.assertIn("Eligible publication was not submitted", evidence["run"])
+        self.assertEqual(evidence["run"].count("Eligible publication was not submitted"), 1)
+        self.assertIn("Eligible publication has an unknown submission outcome", evidence["run"])
+        self.assertIn('RECEIPT_STATE="submission_unknown"', evidence["run"])
+        self.assertIn("article_sha256=${ARTICLE_SHA256}", evidence["run"])
+        self.assertIn("manifest_sha256=${MANIFEST_SHA256}", evidence["run"])
+        self.assertIn("Failure stage:", evidence["run"])
+        self.assertIn(
+            "submission_unknown and submission_rejected remain blocked pending manual reconciliation",
+            evidence["run"],
+        )
 
     def test_podcaster_smoke_workflow_exercises_real_weekly_payload_shape(self) -> None:
         workflow_path = Path(".github/workflows/podcaster-handoff-smoke.yml")

@@ -173,12 +173,14 @@ jobs:
           WEEK: ${{ steps.detect.outputs.week }}
           PUBLISH_RUN_ID: ${{ steps.detect.outputs.publish_run_id }}
           ARTICLE_SHA256: ${{ steps.detect.outputs.article_sha256 }}
+          MANIFEST_SHA256: ${{ steps.detect.outputs.manifest_sha256 }}
         run: |
           python3 scripts/auto_dispatch_detect.py \
             --check-duplicate \
             --week "$WEEK" \
             --publish-run-id "$PUBLISH_RUN_ID" \
-            --article-sha256 "$ARTICLE_SHA256"
+            --article-sha256 "$ARTICLE_SHA256" \
+            --manifest-sha256 "$MANIFEST_SHA256"
 
       - name: Emit detect receipt
         if: always()
@@ -248,6 +250,7 @@ jobs:
             echo "- **Week:** ${{ steps.detect.outputs.week }}"
             echo "- **Publish run ID:** ${{ steps.detect.outputs.publish_run_id }}"
             echo "- **Article SHA-256:** \`${{ steps.detect.outputs.article_sha256 }}\`"
+            echo "- **Manifest SHA-256:** \`${{ steps.detect.outputs.manifest_sha256 }}\`"
             echo ""
             echo "Manual review is required before any retry."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -330,6 +333,7 @@ jobs:
           PUBLISH_RUN_ID: ${{ needs.detect.outputs.publish_run_id }}
           DETECT_MANIFEST_PATH: ${{ needs.detect.outputs.manifest_path }}
           DETECT_ARTICLE_SHA256: ${{ needs.detect.outputs.article_sha256 }}
+          DETECT_MANIFEST_SHA256: ${{ needs.detect.outputs.manifest_sha256 }}
         run: |
           set -euo pipefail
           if ! [[ "$PUBLISH_RUN_ID" =~ ^[0-9]+$ ]]; then
@@ -357,7 +361,7 @@ jobs:
             exit 1
           fi
           # Mirror trigger-podcast.yml validation inline Python
-          python3 - "$MANIFEST" "$WEEK" "$PUBLISH_RUN_ID" "$DETECT_ARTICLE_SHA256" <<'PY'
+          python3 - "$MANIFEST" "$WEEK" "$PUBLISH_RUN_ID" "$DETECT_ARTICLE_SHA256" "$DETECT_MANIFEST_SHA256" <<'PY'
           import hashlib
           import json
           import os
@@ -368,6 +372,7 @@ jobs:
           requested_week = sys.argv[2]
           requested_run_id = sys.argv[3]
           expected_article_sha256 = sys.argv[4]
+          expected_manifest_sha256 = sys.argv[5]
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
           if manifest.get("week") != requested_week:
@@ -394,6 +399,11 @@ jobs:
               )
 
           manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+          if manifest_sha256 != expected_manifest_sha256:
+              raise SystemExit(
+                  f"::error::Manifest SHA-256 mismatch: fetched={manifest_sha256!r} "
+                  f"detect={expected_manifest_sha256!r}"
+              )
 
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as out:
               out.write(f"manifest_path={manifest_path}\n")
@@ -451,15 +461,41 @@ jobs:
           WEEK: ${{ needs.detect.outputs.week }}
           PUBLISH_RUN_ID: ${{ needs.detect.outputs.publish_run_id }}
           MANIFEST_PATH: ${{ steps.manifest-locate.outputs.manifest_path }}
-          MANIFEST_SHA256: ${{ steps.manifest-locate.outputs.manifest_sha256 }}
+          MANIFEST_SHA256: ${{ steps.manifest-locate.outputs.manifest_sha256 || needs.detect.outputs.manifest_sha256 }}
           ARTICLE_PATH: ${{ steps.derive.outputs.article_path }}
-          ARTICLE_SHA256: ${{ steps.manifest-locate.outputs.article_sha256 }}
+          ARTICLE_SHA256: ${{ steps.manifest-locate.outputs.article_sha256 || needs.detect.outputs.article_sha256 }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DISPATCHER: auto-dispatch
         run: |
           RECEIPT_STATE="${PODCASTER_RECEIPT_STATE:-}"
           if [ -z "$RECEIPT_STATE" ]; then
-            RECEIPT_STATE="pre_submit_failed"
+            if [ "$DERIVE_CONCLUSION" != "success" ] || \
+               [ "$MANIFEST_LOCATE_CONCLUSION" != "success" ] || \
+               [ "$HANDOFF_CONCLUSION" = "skipped" ]; then
+              RECEIPT_STATE="pre_submit_failed"
+            else
+              RECEIPT_STATE="submission_unknown"
+            fi
+          fi
+          FAILURE_STAGE=""
+          if [ "$RECEIPT_STATE" = "pre_submit_failed" ] || \
+             [ "$RECEIPT_STATE" = "submission_unknown" ]; then
+            if [ "$DERIVE_CONCLUSION" != "success" ]; then
+              FAILURE_STAGE="article-path-validation"
+            elif [ "$MANIFEST_LOCATE_CONCLUSION" != "success" ]; then
+              FAILURE_STAGE="manifest-validation"
+            elif [ "$RECEIPT_STATE" = "submission_unknown" ]; then
+              FAILURE_STAGE="podcaster-handoff-outcome-unknown"
+            elif [ "$HANDOFF_CONCLUSION" != "success" ]; then
+              FAILURE_STAGE="podcaster-handoff-pre-submit"
+            else
+              FAILURE_STAGE="receipt-capture"
+            fi
+            if [ "$RECEIPT_STATE" = "submission_unknown" ]; then
+              echo "::error::Eligible publication has an unknown submission outcome. stage=${FAILURE_STAGE} week=${WEEK} publish_run_id=${PUBLISH_RUN_ID} article_sha256=${ARTICLE_SHA256} manifest_sha256=${MANIFEST_SHA256}. Do not retry until the exact identity is manually reconciled."
+            else
+              echo "::error::Eligible publication was not submitted. stage=${FAILURE_STAGE} week=${WEEK} publish_run_id=${PUBLISH_RUN_ID} article_sha256=${ARTICLE_SHA256} manifest_sha256=${MANIFEST_SHA256}. Review the failing step and retry only this exact identity after the cause is cleared."
+            fi
           fi
           export RECEIPT_STATE
           python3 - <<'PY'
@@ -485,6 +521,7 @@ jobs:
             echo "## Podcaster real-generation evidence"
             echo ""
             echo "- Receipt state: ${RECEIPT_STATE}"
+            echo "- Failure stage: ${FAILURE_STAGE:-not-applicable}"
             echo "- Workflow conclusion: ${HANDOFF_OUTCOME}"
             echo "- Dispatcher: ${DISPATCHER}"
             echo "- Trigger: auto-dispatch (push to main)"
@@ -497,6 +534,7 @@ jobs:
             echo "- Podcaster response status: ${PODCASTER_STATUS}"
             echo "- Podcaster job ID: ${PODCASTER_JOB_ID}"
             echo "- Actions run: ${RUN_URL}"
+            echo "- Recovery: Review the failing step and canonical receipt. Retry only a pre_submit_failed identity after the cause is cleared; submission_unknown and submission_rejected remain blocked pending manual reconciliation."
           } >> "$GITHUB_STEP_SUMMARY"
 
   observe-summary:
