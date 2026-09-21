@@ -1,6 +1,6 @@
 {
   "week": "2026-W38",
-  "crawled_at": "2026-09-14T04:38:17Z",
+  "crawled_at": "2026-09-14T04:38:26Z",
   "new_repos": [
     {
       "id": 1361260630,
@@ -4887,7 +4887,7 @@
       "archived": false,
       "disabled": false,
       "created_at": "2025-11-24T10:16:47Z",
-      "updated_at": "2026-09-14T04:36:13Z",
+      "updated_at": "2026-09-14T04:38:32Z",
       "pushed_at": "2026-09-14T04:38:17Z",
       "topics": [
         "ai",
@@ -5708,12 +5708,12 @@
       "full_name": "huggingface/transformers",
       "description": "🤗 Transformers: the model-definition framework for state-of-the-art machine learning models in text, vision, audio, and multimodal models, for both inference and training. ",
       "language": "Python",
-      "stars": 165620,
+      "stars": 165621,
       "forks": 34562,
       "archived": false,
       "disabled": false,
       "created_at": "2018-10-29T13:56:00Z",
-      "updated_at": "2026-09-14T04:38:03Z",
+      "updated_at": "2026-09-14T04:38:28Z",
       "pushed_at": "2026-09-14T04:24:36Z",
       "topics": [
         "audio",
@@ -6109,12 +6109,12 @@
       "full_name": "Shubhamsaboo/awesome-llm-apps",
       "description": "100+ AI Agents, Agent Skills and RAG Apps - Free and Open Source.",
       "language": "Python",
-      "stars": 137997,
+      "stars": 137998,
       "forks": 20279,
       "archived": false,
       "disabled": false,
       "created_at": "2024-04-29T05:30:25Z",
-      "updated_at": "2026-09-14T04:37:30Z",
+      "updated_at": "2026-09-14T04:38:33Z",
       "pushed_at": "2026-09-13T03:46:11Z",
       "topics": [
         "agents",
@@ -12096,11 +12096,11 @@
     "cache_hits": 0,
     "stale_cache_hits": 0,
     "rate_limit_limit": 5000,
-    "rate_limit_remaining": 4559,
-    "rate_limit_reset": 1789364310,
+    "rate_limit_remaining": 4558,
+    "rate_limit_reset": 1789364293,
     "rate_limit_resource": "core",
     "partial_failures": [],
-    "run_id": "34806779983",
+    "run_id": "34806779896",
     "crawl_window": {
       "since": "2026-09-07",
       "until": "2026-09-14"
@@ -12129,6 +12129,6 @@
     "snapshot_path": "data/snapshots/2026-W38-stars.json",
     "source_refresh_policy": "reuse-same-day",
     "crawler_code_sha": "b3299b7eddf262f648b46bf5fda446f177a1053de6836a2719bce881ab098da5",
-    "artifact_checksum": "6dc4eda5a5156346365d15a6c00f56f864c1c129e9dbcabb31603edd1c060ac3"
+    "artifact_checksum": "c33ad62d33419555e5fc24aa84796fb3e445f17efbe2874744ad5c3b7f05cb47"
   }
 }
