@@ -763,7 +763,13 @@ class PodcasterHandoffTests(unittest.TestCase):
         self.assertIn("status=accepted", notice)
 
     def test_main_writes_only_safe_action_outputs(self) -> None:
-        response = {"job_id": "podcast%0Ajob", "status": "accepted", "errors": []}
+        response = {
+            "job_id": "podcast%0Ajob",
+            "correlation_id": "correlation-123",
+            "status": "accepted",
+            "api_status": 202,
+            "errors": [],
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "outputs"
             with (
@@ -797,10 +803,12 @@ class PodcasterHandoffTests(unittest.TestCase):
                 output_path.read_text(encoding="utf-8"),
                 "podcaster_job_id=podcast%250Ajob\n"
                 "podcaster_status=accepted\n"
+                "podcaster_http_status=202\n"
+                "podcaster_correlation_id=correlation-123\n"
                 "podcaster_receipt_state=submitted\n",
             )
 
-    def test_failed_handoff_writes_only_receipt_state(self) -> None:
+    def test_failed_handoff_writes_receipt_state_and_status_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "outputs"
             with (
@@ -810,7 +818,9 @@ class PodcasterHandoffTests(unittest.TestCase):
                     "post_handoff",
                     side_effect=podcaster_handoff.PodcasterHandoffError(
                         "rejected",
-                        receipt_state=podcaster_handoff.RECEIPT_STATE_SUBMISSION_REJECTED,
+                        receipt_state=podcaster_handoff.RECEIPT_STATE_SUBMISSION_UNKNOWN,
+                        api_status=429,
+                        api_status_category="http_outcome_unknown",
                     ),
                 ),
                 mock.patch.dict(
@@ -839,7 +849,9 @@ class PodcasterHandoffTests(unittest.TestCase):
             self.assertEqual(exit_code, 1)
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"),
-                "podcaster_receipt_state=submission_rejected\n",
+                "podcaster_receipt_state=submission_unknown\n"
+                "podcaster_http_status=429\n"
+                "podcaster_api_status_category=http_outcome_unknown\n",
             )
 
     def test_action_outputs_are_optional_for_local_cli(self) -> None:
@@ -1251,7 +1263,7 @@ class PodcasterHandoffTests(unittest.TestCase):
                 )
         self.assertEqual(
             ctx.exception.receipt_state,
-            podcaster_handoff.RECEIPT_STATE_SUBMISSION_REJECTED,
+            podcaster_handoff.RECEIPT_STATE_SUBMISSION_UNKNOWN,
         )
 
     def test_error_body_included_and_sanitized_in_exception(self) -> None:
@@ -1280,20 +1292,69 @@ class PodcasterHandoffTests(unittest.TestCase):
                     },
                 )
         msg = str(ctx.exception)
-        # Body IS included
-        self.assertIn("Response body:", msg)
-        self.assertIn("line1", msg)
-        # Truncated: 1024 bytes read max, so not all 1100 'A's appear
-        self.assertLessEqual(len(msg), 1200)
-        # Sanitized: no newlines or :: sequences
-        body_part = msg.split("Response body: ", 1)[1]
-        self.assertNotIn("\n", body_part)
-        self.assertNotIn("\r", body_part)
-        self.assertNotIn("::", body_part)
+        self.assertEqual(msg, "Podcaster handoff failed with HTTP 502.")
+        self.assertEqual(
+            ctx.exception.receipt_state,
+            podcaster_handoff.RECEIPT_STATE_SUBMISSION_UNKNOWN,
+        )
+        self.assertEqual(ctx.exception.api_status, 502)
+        self.assertEqual(ctx.exception.api_status_category, "http_outcome_unknown")
+
+    def test_definitive_client_rejection_remains_retryable(self) -> None:
+        http_err = error.HTTPError(
+            url="http://localhost:7071/api/generate",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=io.BytesIO(b"{}"),
+        )
+        with mock.patch.object(podcaster_handoff.request, "urlopen", side_effect=http_err):
+            with self.assertRaises(podcaster_handoff.PodcasterHandoffError) as ctx:
+                podcaster_handoff.post_handoff(
+                    "http://localhost:7071/api/generate",
+                    "super-secret-value",
+                    {
+                        "week": "2026-W23",
+                        "article_url": "https://jmservera.github.io/SquadScope/weekly/2026/w23/",
+                        "article_path": "content/weekly/2026/W23.md",
+                        "publish_run_id": "123456789",
+                        "publish_mode": "normal",
+                        "manifest_sha256": "a" * 64,
+                    },
+                )
         self.assertEqual(
             ctx.exception.receipt_state,
             podcaster_handoff.RECEIPT_STATE_SUBMISSION_REJECTED,
         )
+        self.assertEqual(ctx.exception.api_status_category, "http_rejected_pre_acceptance")
+
+    def test_rate_limit_response_is_submission_unknown(self) -> None:
+        http_err = error.HTTPError(
+            url="http://localhost:7071/api/generate",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={},
+            fp=io.BytesIO(b"{}"),
+        )
+        with mock.patch.object(podcaster_handoff.request, "urlopen", side_effect=http_err):
+            with self.assertRaises(podcaster_handoff.PodcasterHandoffError) as ctx:
+                podcaster_handoff.post_handoff(
+                    "http://localhost:7071/api/generate",
+                    "super-secret-value",
+                    {
+                        "week": "2026-W23",
+                        "article_url": "https://jmservera.github.io/SquadScope/weekly/2026/w23/",
+                        "article_path": "content/weekly/2026/W23.md",
+                        "publish_run_id": "123456789",
+                        "publish_mode": "normal",
+                        "manifest_sha256": "a" * 64,
+                    },
+                )
+        self.assertEqual(
+            ctx.exception.receipt_state,
+            podcaster_handoff.RECEIPT_STATE_SUBMISSION_UNKNOWN,
+        )
+        self.assertEqual(ctx.exception.api_status_category, "http_outcome_unknown")
 
     def test_article_url_from_page_path_matches_hugo_weekly_permalink(self) -> None:
         self.assertEqual(

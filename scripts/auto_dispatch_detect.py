@@ -55,6 +55,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib import request
 
+try:
+    from scripts.podcast_dispatch_state import (
+        DispatchReceipt,
+        canonical_identity_key,
+        list_ledger_receipts,
+        parse_receipt,
+        receipt_retry_classification,
+    )
+except ModuleNotFoundError:
+    from podcast_dispatch_state import (  # type: ignore[no-redef]
+        DispatchReceipt,
+        canonical_identity_key,
+        list_ledger_receipts,
+        parse_receipt,
+        receipt_retry_classification,
+    )
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -73,8 +90,10 @@ TRIGGER_PODCAST_WORKFLOW = "trigger-podcast.yml"
 AUTO_DISPATCH_WORKFLOW_PATH = f".github/workflows/{AUTO_DISPATCH_WORKFLOW}"
 TRIGGER_PODCAST_WORKFLOW_PATH = f".github/workflows/{TRIGGER_PODCAST_WORKFLOW}"
 WORKFLOW_LOOKBACK_RUNS = 50
-BLOCKING_RECEIPT_STATES = frozenset({"submitted", "submission_rejected"})
-AMBIGUOUS_RECEIPT_STATES = frozenset({"ambiguous_prior_submission", "submission_unknown"})
+BLOCKING_RECEIPT_STATES = frozenset({"submitted", "accepted"})
+AMBIGUOUS_RECEIPT_STATES = frozenset(
+    {"ambiguous_prior_submission", "submission_unknown", "handoff_entered"}
+)
 PROVEN_NO_SUBMISSION_RECEIPT_STATES = frozenset(
     {
         "no_anchor",
@@ -82,9 +101,12 @@ PROVEN_NO_SUBMISSION_RECEIPT_STATES = frozenset(
         "no_new_article",
         "observe_only",
         "paused",
+        "attempt_prepared",
         "pre_submit_failed",
+        "observation_only",
     }
 )
+_EVIDENCE_CONFIG_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -108,6 +130,32 @@ def _base_identity_matches(left: DispatchIdentity, right: DispatchIdentity) -> b
         left.week == right.week
         and left.publish_run_id == right.publish_run_id
         and left.article_sha256 == right.article_sha256
+    )
+
+
+def _metadata_contains_identifier(metadata: str, identifier: str) -> bool:
+    if not identifier:
+        return False
+    return (
+        re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(identifier)}(?![A-Za-z0-9])",
+            metadata,
+        )
+        is not None
+    )
+
+
+def _run_metadata_associates_identity(run: dict[str, Any], identity: DispatchIdentity) -> bool:
+    metadata = " ".join(
+        str(run.get(field) or "") for field in ("name", "display_title", "head_branch")
+    )
+    return any(
+        _metadata_contains_identifier(metadata, value)
+        for value in (
+            identity.publish_run_id,
+            identity.article_sha256,
+            identity.manifest_sha256,
+        )
     )
 
 
@@ -142,11 +190,13 @@ def fetch_publish_branch() -> None:
 
 
 def _github_api_headers(token: str) -> dict[str, str]:
-    return {
+    headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _github_api_json(url: str, token: str) -> dict[str, Any]:
@@ -179,8 +229,8 @@ def _run_url(run: dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _parse_dispatch_receipts(log_text: str) -> list[dict[str, Any]]:
-    receipts: list[dict[str, Any]] = []
+def _parse_dispatch_receipts(log_text: str) -> list[dict[str, Any] | DispatchReceipt]:
+    receipts: list[dict[str, Any] | DispatchReceipt] = []
     for line in log_text.splitlines():
         if RECEIPT_PREFIX not in line:
             continue
@@ -189,12 +239,25 @@ def _parse_dispatch_receipts(log_text: str) -> list[dict[str, Any]]:
             parsed = json.loads(payload.strip())
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict) and parsed.get("schema_version") == RECEIPT_SCHEMA_VERSION:
-            receipts.append(parsed)
+        if not isinstance(parsed, dict):
+            continue
+        try:
+            receipts.append(parse_receipt(parsed))
+        except ValueError:
+            continue
     return receipts
 
 
-def _receipt_identity_matches(receipt: dict[str, Any], identity: DispatchIdentity) -> bool:
+def _receipt_identity_matches(
+    receipt: dict[str, Any] | DispatchReceipt, identity: DispatchIdentity
+) -> bool:
+    if isinstance(receipt, DispatchReceipt):
+        return (
+            receipt.identity.week == identity.week
+            and receipt.identity.publish_run_id == identity.publish_run_id
+            and receipt.identity.article_sha256 == identity.article_sha256
+            and receipt.identity.manifest_sha256 == identity.manifest_sha256
+        )
     return (
         receipt.get("week") == identity.week
         and str(receipt.get("publish_run_id") or "") == identity.publish_run_id
@@ -203,7 +266,11 @@ def _receipt_identity_matches(receipt: dict[str, Any], identity: DispatchIdentit
     )
 
 
-def _receipt_base_identity_matches(receipt: dict[str, Any], identity: DispatchIdentity) -> bool:
+def _receipt_base_identity_matches(
+    receipt: dict[str, Any] | DispatchReceipt, identity: DispatchIdentity
+) -> bool:
+    if isinstance(receipt, DispatchReceipt):
+        return _base_identity_matches(receipt.identity, identity)
     return (
         receipt.get("week") == identity.week
         and str(receipt.get("publish_run_id") or "") == identity.publish_run_id
@@ -211,14 +278,33 @@ def _receipt_base_identity_matches(receipt: dict[str, Any], identity: DispatchId
     )
 
 
-def _receipt_identity_conflicts(receipt: dict[str, Any], identity: DispatchIdentity) -> bool:
+def _receipt_identity_conflicts(
+    receipt: dict[str, Any] | DispatchReceipt, identity: DispatchIdentity
+) -> bool:
     if not identity.manifest_sha256:
+        return False
+    if isinstance(receipt, DispatchReceipt):
         return False
     return (
         _receipt_base_identity_matches(receipt, identity)
         and isinstance(receipt.get("manifest_sha256"), str)
         and bool(receipt["manifest_sha256"])
         and receipt["manifest_sha256"] != identity.manifest_sha256
+    )
+
+
+def _receipt_proves_no_submission(receipt: dict[str, Any] | DispatchReceipt) -> bool:
+    state = (
+        receipt.receipt_state
+        if isinstance(receipt, DispatchReceipt)
+        else str(receipt.get("receipt_state") or "")
+    )
+    if state in PROVEN_NO_SUBMISSION_RECEIPT_STATES:
+        return True
+    return (
+        isinstance(receipt, DispatchReceipt)
+        and state == "submission_rejected"
+        and receipt.api_status_category == "http_rejected_pre_acceptance"
     )
 
 
@@ -287,16 +373,22 @@ def _identity_from_sync_commit(
     week, _, _ = extract_week_from_article_path(article_paths[0])
     if not week:
         return None
+    manifest_path = f"data/candidates/{week}/{publish_run_id}/publish-manifest.json"
     try:
-        manifest = read_manifest_from_publish(
-            f"data/candidates/{week}/{publish_run_id}/publish-manifest.json"
-        )
+        manifest = read_manifest_from_publish(manifest_path)
     except (ValueError, json.JSONDecodeError, KeyError):
         return None
     candidate = manifest.get("candidate") or {}
     article_sha256 = candidate.get("content_sha256")
     if not isinstance(article_sha256, str) or not SHA256_RE.match(article_sha256):
         return None
+    manifest_sha256 = ""
+    try:
+        manifest_sha256 = hashlib.sha256(
+            read_manifest_bytes_from_publish(manifest_path)
+        ).hexdigest()
+    except ValueError:
+        pass
     manifest_sha256 = ""
     try:
         manifest_bytes = read_manifest_bytes_from_publish(
@@ -362,6 +454,16 @@ def _compat_identity_for_run(
         if _legacy_auto_pre_submit_only(run, jobs):
             return "ignore", identity
         if (
+            identity is None
+            and not jobs
+            and not log_text
+            and run.get("conclusion") == "cancelled"
+            and _legacy_run_single_attempt(run)
+        ):
+            if _run_metadata_associates_identity(run, requested_identity):
+                return "ambiguous", None
+            return "ignore", None
+        if (
             _step_conclusion(jobs, "Protected podcast dispatch", "Trigger podcast generation")
             == "success"
         ):
@@ -383,7 +485,9 @@ def _compat_identity_for_run(
 
     publish_run_id = _extract_publish_run_id_from_log_text(log_text)
     if publish_run_id is None:
-        return "ambiguous", None
+        if _run_metadata_associates_identity(run, requested_identity):
+            return "ambiguous", None
+        return "ignore", None
     if publish_run_id != requested_identity.publish_run_id:
         return "ignore", None
 
@@ -674,6 +778,17 @@ def detect(args: argparse.Namespace) -> None:
     set_output("article_url", article_url)
     set_output("article_sha256", article_sha256)
     set_output("manifest_sha256", manifest_sha256)
+    set_output(
+        "identity_key",
+        canonical_identity_key(
+            DispatchIdentity(
+                week=week,
+                publish_run_id=run_id,
+                article_sha256=article_sha256,
+                manifest_sha256=manifest_sha256,
+            )
+        ),
+    )
 
     print(f"  status: {status}")
     print(f"  publish_run_id: {run_id}")
@@ -711,20 +826,25 @@ def _check_duplicate_cli(args: argparse.Namespace) -> None:
 
     gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not gh_token:
-        print("::warning::GH_TOKEN/GITHUB_TOKEN not set; skipping duplicate check.")
-        print("  Relying on concurrency group and Podcaster idempotency.")
+        print(
+            "::error::GH_TOKEN/GITHUB_TOKEN not set; trusted duplicate evidence is unavailable.",
+            file=sys.stderr,
+        )
         set_output("is_duplicate", "false")
         set_output("prior_run_url", "")
-        set_output("dedup_status", "skipped_missing_token")
-        return
+        set_output("dedup_status", "ambiguous_prior_submission")
+        sys.exit(1)
 
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not repo:
-        print("::warning::GITHUB_REPOSITORY not set; skipping duplicate check.")
+        print(
+            "::error::GITHUB_REPOSITORY not set; trusted duplicate evidence is unavailable.",
+            file=sys.stderr,
+        )
         set_output("is_duplicate", "false")
         set_output("prior_run_url", "")
-        set_output("dedup_status", "skipped_missing_repository")
-        return
+        set_output("dedup_status", "ambiguous_prior_submission")
+        sys.exit(1)
 
     result = check_duplicate_result(
         week,
@@ -760,8 +880,8 @@ def _check_duplicate_cli(args: argparse.Namespace) -> None:
 
     print(
         f"  No prior real podcast dispatch found for identity "
-        f"week={week} publish_run_id={publish_run_id} article_sha256={article_sha256}."
-        f" manifest_sha256={manifest_sha256}."
+        f"week={week} publish_run_id={publish_run_id} article_sha256={article_sha256} "
+        f"manifest_sha256={manifest_sha256}."
     )
     set_output("is_duplicate", "false")
     set_output("prior_run_url", "")
@@ -987,6 +1107,7 @@ def check_duplicate_api(
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
+        req.add_header("Authorization", f"Bearer {token}")
         with request.urlopen(req, timeout=15) as resp:  # nosec B310 - URL is constructed from trusted API endpoint
             data = json.loads(resp.read())
     except Exception:
@@ -1006,8 +1127,8 @@ def check_duplicate_result(
     week: str,
     run_id: str,
     article_sha256: str,
-    gh_token: "str | None" = None,
-    repo: "str | None" = None,
+    gh_token: "str | None | object" = _EVIDENCE_CONFIG_UNSET,
+    repo: "str | None | object" = _EVIDENCE_CONFIG_UNSET,
     *,
     repo_root: "Path | str" = Path("."),
     manifest_sha256: str = "",
@@ -1026,10 +1147,18 @@ def check_duplicate_result(
             is_duplicate=False,
             reason="missing_requested_manifest_sha256",
         )
-    token = gh_token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    repository = repo or os.environ.get("GITHUB_REPOSITORY", "")
-    if not token or not repository:
-        return DuplicateCheckResult(status="clear", is_duplicate=False)
+    token = (
+        os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if gh_token is _EVIDENCE_CONFIG_UNSET
+        else gh_token
+    )
+    repository = os.environ.get("GITHUB_REPOSITORY", "") if repo is _EVIDENCE_CONFIG_UNSET else repo
+    if not isinstance(token, str) or not token or not isinstance(repository, str) or not repository:
+        return DuplicateCheckResult(
+            status="ambiguous_prior_submission",
+            is_duplicate=False,
+            reason="trusted_evidence_configuration_unavailable",
+        )
 
     identity = DispatchIdentity(
         week=week,
@@ -1040,13 +1169,28 @@ def check_duplicate_result(
 
     try:
         fetch_publish_branch()
+        ledger_receipts = list_ledger_receipts(repository, token)
         candidate_runs: list[dict[str, Any]] = []
         for workflow_file in (AUTO_DISPATCH_WORKFLOW, TRIGGER_PODCAST_WORKFLOW):
             candidate_runs.extend(_list_workflow_runs(repository, token, workflow_file))
     except Exception:
-        return DuplicateCheckResult(status="clear", is_duplicate=False)
+        return DuplicateCheckResult(
+            status="ambiguous_prior_submission",
+            is_duplicate=False,
+            reason="trusted_evidence_unavailable",
+        )
 
-    unreadable_prior_run_url: str | None = None
+    exact_ledger_receipts = [
+        receipt for receipt in ledger_receipts if _receipt_identity_matches(receipt, identity)
+    ]
+    if exact_ledger_receipts:
+        states = {receipt.receipt_state for receipt in exact_ledger_receipts}
+        if states & {"accepted"}:
+            return DuplicateCheckResult("duplicate", True, reason="accepted")
+        if receipt_retry_classification(exact_ledger_receipts) != "retryable_non_mutation":
+            return DuplicateCheckResult(
+                "ambiguous_prior_submission", False, reason="exact_identity_uncertain"
+            )
 
     for run in candidate_runs:
         run_id_value = run.get("id")
@@ -1069,7 +1213,11 @@ def check_duplicate_result(
         receipts = _parse_dispatch_receipts(log_text)
         matched_receipt = False
         for receipt in receipts:
-            state = str(receipt.get("receipt_state") or "")
+            state = (
+                receipt.receipt_state
+                if isinstance(receipt, DispatchReceipt)
+                else str(receipt.get("receipt_state") or "")
+            )
             if _receipt_identity_conflicts(receipt, identity):
                 return DuplicateCheckResult(
                     status="ambiguous_prior_submission",
@@ -1080,8 +1228,9 @@ def check_duplicate_result(
             if (
                 identity.manifest_sha256
                 and _receipt_base_identity_matches(receipt, identity)
+                and isinstance(receipt, dict)
                 and not SHA256_RE.match(str(receipt.get("manifest_sha256") or ""))
-                and state not in PROVEN_NO_SUBMISSION_RECEIPT_STATES
+                and not _receipt_proves_no_submission(receipt)
             ):
                 return DuplicateCheckResult(
                     status="ambiguous_prior_submission",
@@ -1113,7 +1262,7 @@ def check_duplicate_result(
                     prior_run_url=_run_url(run) or None,
                     reason=state,
                 )
-            if state in PROVEN_NO_SUBMISSION_RECEIPT_STATES:
+            if _receipt_proves_no_submission(receipt):
                 break
             return DuplicateCheckResult(
                 status="ambiguous_prior_submission",
@@ -1145,7 +1294,13 @@ def check_duplicate_result(
                         and legacy_publish_run_id != identity.publish_run_id
                     ):
                         continue
-            unreadable_prior_run_url = unreadable_prior_run_url or (_run_url(run) or None)
+            if _run_metadata_associates_identity(run, identity):
+                return DuplicateCheckResult(
+                    status="ambiguous_prior_submission",
+                    is_duplicate=False,
+                    prior_run_url=_run_url(run) or None,
+                    reason="related_history_evidence_unavailable",
+                )
             continue
 
         compatibility, compat_identity = _compat_identity_for_run(
@@ -1185,14 +1340,6 @@ def check_duplicate_result(
                 prior_run_url=_run_url(run) or None,
                 reason="legacy_submission_without_canonical_receipt",
             )
-
-    if unreadable_prior_run_url is not None:
-        return DuplicateCheckResult(
-            status="ambiguous_prior_submission",
-            is_duplicate=False,
-            prior_run_url=unreadable_prior_run_url,
-            reason="prior run log/jobs unreadable",
-        )
 
     return DuplicateCheckResult(status="clear", is_duplicate=False)
 
