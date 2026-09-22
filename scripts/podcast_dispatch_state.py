@@ -45,6 +45,18 @@ REQUEST_TIMEOUT_SECONDS = 10
 MAX_CONSECUTIVE_ERRORS = 5
 SYNTHESIS_WARNING_SECONDS = 600
 MAX_GITHUB_PAGES = 100
+WEEKLY_GREEN_STATES = frozenset({"published_verified", "published_verified_recovered"})
+WEEKLY_NON_GREEN_STATES = frozenset(
+    {
+        "publication_partial",
+        "publication_failed",
+        "publication_unknown",
+        "publication_unverified",
+        "manual_action_required",
+        "duplicate_ambiguous",
+        "readback_missing",
+    }
+)
 
 
 def _validate(value: str, pattern: re.Pattern[str], field: str) -> str:
@@ -150,6 +162,7 @@ class MonitorResult:
     warning_emitted: bool = False
     detail: str = ""
     cleanup_budget_seconds: float = 0
+    terminal_status: TerminalStatus | None = None
 
 
 class TerminalEvidenceError(ValueError):
@@ -552,6 +565,62 @@ def evaluate_terminal_status(status: TerminalStatus) -> MonitorResult | None:
     return None
 
 
+def derive_weekly_identity_state(
+    identity: CanonicalPublicationIdentity,
+    status: TerminalStatus | None,
+    *,
+    prior_non_green_attempt: bool = False,
+    manual_action: bool = False,
+    duplicate_ambiguous: bool = False,
+) -> str:
+    """Derive weekly outcome without rewriting immutable attempt evidence."""
+    if status is not None and status.identity == identity:
+        terminal = evaluate_terminal_status(status)
+        if terminal is not None and terminal.success:
+            return (
+                "published_verified_recovered" if prior_non_green_attempt else "published_verified"
+            )
+        if terminal is None:
+            return "publication_partial"
+        if terminal.state == "unverified":
+            return "publication_unverified"
+        if terminal.state == "unknown":
+            return "publication_unknown"
+        return "publication_failed"
+    if duplicate_ambiguous:
+        return "duplicate_ambiguous"
+    if manual_action:
+        return "manual_action_required"
+    if status is not None:
+        return "publication_unknown"
+    return "readback_missing"
+
+
+def has_prior_non_green_attempt(
+    receipts: Iterable[DispatchReceipt],
+    current: DispatchReceipt,
+) -> bool:
+    """Return true only for explicit non-green evidence from an earlier attempt."""
+    attempts: dict[str, list[DispatchReceipt]] = {}
+    for receipt in receipts:
+        if receipt.identity == current.identity and receipt.attempt_id != current.attempt_id:
+            attempts.setdefault(receipt.attempt_id, []).append(receipt)
+    for attempt_receipts in attempts.values():
+        if any(
+            receipt.stage == "provider" and receipt.state == "published"
+            for receipt in attempt_receipts
+        ):
+            continue
+        if any(
+            receipt.stage is not None or receipt.state is not None for receipt in attempt_receipts
+        ):
+            return True
+        states = {receipt.receipt_state for receipt in attempt_receipts}
+        if "accepted" not in states and states != {"observation_only"}:
+            return True
+    return False
+
+
 def fetch_terminal_status(
     endpoint: str,
     token: str,
@@ -678,6 +747,7 @@ def monitor_terminal_outcome(
                     warning_emitted,
                     "",
                     max(0.0, TOTAL_MONITOR_BUDGET_SECONDS - elapsed),
+                    latest,
                 )
         else:
             if latest.synthesis_state in {"started", "succeeded"} and synthesis_latency is None:
@@ -693,6 +763,7 @@ def monitor_terminal_outcome(
                     warning_emitted,
                     result.detail,
                     max(0.0, TOTAL_MONITOR_BUDGET_SECONDS - elapsed),
+                    latest,
                 )
         elapsed = accepted_elapsed_at_start + (monotonic() - started)
         if (
@@ -722,6 +793,7 @@ def monitor_terminal_outcome(
         warning_emitted,
         "",
         max(0.0, TOTAL_MONITOR_BUDGET_SECONDS - elapsed),
+        latest,
     )
 
 
@@ -1099,18 +1171,54 @@ def main(argv: list[str] | None = None) -> int:
 
     result = monitor_terminal_outcome(parsed, args.endpoint, api_key, warning=warn)
     cleanup_deadline = _bounded_incident_deadline(result.cleanup_budget_seconds)
+    prior_non_green_attempt = False
+    prior_attempt_history_available = False
+    if result.success and args.repo and token:
+        try:
+            receipts = list_ledger_receipts(
+                args.repo,
+                token,
+                deadline=min(
+                    cleanup_deadline,
+                    time.monotonic() + REQUEST_TIMEOUT_SECONDS,
+                ),
+            )
+        except (OSError, TimeoutError, ValueError, error.HTTPError, error.URLError) as exc:
+            print(
+                "::warning::Prior attempt history could not be loaded; "
+                f"weekly recovery classification is unavailable: {type(exc).__name__}"
+            )
+        else:
+            prior_attempt_history_available = True
+            prior_non_green_attempt = has_prior_non_green_attempt(receipts, parsed)
+    receipt_classification = receipt_retry_classification([parsed])
+    weekly_state = derive_weekly_identity_state(
+        parsed.identity,
+        result.terminal_status,
+        prior_non_green_attempt=prior_non_green_attempt,
+        manual_action=(
+            parsed.receipt_state != "accepted" and receipt_classification != "ambiguous_exact"
+        ),
+        duplicate_ambiguous=receipt_classification == "ambiguous_exact",
+    )
+    weekly_success = weekly_state in WEEKLY_GREEN_STATES
     summary = (
         f"## Podcast dispatch reconciliation\n\n"
         f"- Identity key: `{canonical_identity_key(parsed.identity)}`\n"
         f"- Result: `{result.stage}/{result.state}`\n"
-        f"- Terminal success: `{str(result.success).lower()}`\n"
+        f"- Weekly identity state: `{weekly_state}`\n"
+        f"- Terminal monitor success: `{str(result.success).lower()}`\n"
+        f"- Weekly identity green: `{str(weekly_success).lower()}`\n"
+        f"- Prior attempt history available: "
+        f"`{str(prior_attempt_history_available).lower()}`\n"
+        f"- Prior non-green attempt: `{str(prior_non_green_attempt).lower()}`\n"
         f"- Synthesis latency seconds: `{result.synthesis_latency_seconds}`\n"
         f"- Synthesis warning incident: `{warning_urls[-1] if warning_urls else 'none'}`\n"
     )
     if args.summary:
         with args.summary.open("a", encoding="utf-8") as output:
             output.write(summary)
-    if result.success:
+    if weekly_success:
         if args.repo and token:
             reconcile_identity_incidents(
                 args.repo,
