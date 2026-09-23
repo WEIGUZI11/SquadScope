@@ -124,6 +124,30 @@ production inference path.
 
 **Applied to production Copilot CLI prompts:**
 
+- Capability isolation is the primary write boundary. Each synthesis and
+  analysis invocation runs under Bubblewrap through the runner's passwordless
+  `sudo`, avoiding reliance on unprivileged user namespaces. The namespace
+  exposes only the read-only system runtime, read-only Node/Copilot runtime,
+  narrowly selected network/TLS configuration, an ephemeral private `/tmp`,
+  `/dev`, and the isolated workspace. It does not mount `/proc`, preventing
+  model-controlled file reads from reaching the Copilot process environment.
+  The repository checkout, runner home, and other runner-temporary files are
+  not mounted. Only the isolated `output/` directory is bind-mounted writable.
+  Although `sudo` starts the privileged Bubblewrap setup, the sandboxed
+  Copilot process explicitly runs as the original runner UID and GID.
+- `scripts/run_copilot_sandbox.py` owns the single production mount policy for
+  both agents and fails fast unless the Copilot entry point is inside the
+  resolved Node runtime being mounted.
+- The isolated workspace root and all input directories are read-only. Only
+  enumerated regular files below `output/` may be created. Unexpected files,
+  directories, symlinks, hard links, input changes, path traversal, and output
+  destinations outside the checkout fail closed.
+- Outputs are validated inside the isolated workspace and copied into the
+  checkout only after the exact-file verification and prompt-output safety
+  checks succeed.
+- Workflow transfer and promotion are scoped to the current week's analyzed
+  files plus the current run's summary, eligibility manifest, and gate report
+  rather than whole mutable `data/analyzed/` and `data/candidates/` trees.
 - Recursive repository-payload sanitization.
 - Source-specific caps for press, rolling, previous-week, monthly, yearly,
   continuity, and synthesis content.
@@ -136,9 +160,9 @@ production inference path.
   invocation; its SHA-256 must still match before post-invocation verification.
 - A read-only baseline snapshot outside the checkout whose SHA-256 is retained
   in the invoking shell and rechecked before the verifier trusts it.
-- Fail-closed workspace snapshots covering file content, types, permissions,
-  ownership, directory metadata, the Git index, and `.git` metadata. Only the
-  exact declared output and diagnostic artifacts may be created.
+- Fail-closed checkout snapshots covering file content, types, permissions,
+  ownership, directory metadata, the Git index, and `.git` metadata remain as
+  defense in depth against an escape from the isolated working directory.
 - Direct workflow calls to `ai_output_guard.py validate` immediately after both
   production Copilot CLI invocations. Each call uses that invocation's canary
   token and rejects canary leaks or escaped boundary markers before the
@@ -341,7 +365,13 @@ The following summarizes the complete defense chain from data ingestion to publi
 - Boundary tags and instruction repetition reduce instruction confusion but
   cannot guarantee model compliance against novel or obfuscated attacks.
 - Phrase-based sanitization can miss multilingual, encoded, or semantically
-  equivalent injections and can also truncate benign text.
+  equivalent injections and can also truncate benign text. It is telemetry and
+  defense in depth, not the capability boundary.
+- Copilot CLI remains a privileged network client, and Bubblewrap does not
+  constrain outbound network access. The mount sandbox prevents filesystem
+  writes outside its output bind and ephemeral scratch space; exact output
+  verification, canary validation, and the retained checkout-diff gate provide
+  additional containment and detection.
 - Production runs `ai_output_guard.py validate` immediately after each Copilot
   CLI invocation and rejects canary leakage or configured unsafe output before
   acceptance. A well-formed manipulated output can still pass these checks, so
