@@ -126,6 +126,58 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn('--allow "$SYNTHESIS_LOG"', synthesis["run"])
         self.assertIn('--allow "$COPILOT_LOG"', analysis["run"])
 
+    def test_analysis_gates_receive_run_scoped_external_evidence(self) -> None:
+        workflow = yaml.safe_load(
+            Path(".github/workflows/crawl-and-publish.yml").read_text(encoding="utf-8")
+        )
+        analyze_steps = workflow["jobs"]["analyze"]["steps"]
+        press_context = next(
+            step
+            for step in analyze_steps
+            if step.get("name") == "Run correlation and press context"
+        )
+        run_analysis = next(step for step in analyze_steps if step.get("name") == "Run analysis")
+        quality_check = next(step for step in analyze_steps if step.get("name") == "quality-check")
+
+        self.assertIn("external_news_json=$TC_FILE", press_context["run"])
+        self.assertIn("correlations_json=$CORRELATIONS_FILE", press_context["run"])
+        self.assertIn('rm -f -- "$CORRELATIONS_FILE"', press_context["run"])
+        for step in (run_analysis, quality_check):
+            self.assertIn("--external-news-json", step["run"])
+            self.assertIn("--correlations-json", step["run"])
+        self.assertIn(
+            'MAP_REDUCE_ARGS+=(--external-news-json "$EXTERNAL_NEWS_JSON")', run_analysis["run"]
+        )
+        self.assertIn(
+            'MAP_REDUCE_ARGS+=(--correlations-json "$CORRELATIONS_JSON")', run_analysis["run"]
+        )
+
+        clear_step = next(
+            step
+            for step in workflow["jobs"]["crawl"]["steps"]
+            if step.get("name") == "Clear run-scoped external evidence destinations"
+        )
+        self.assertIn('"data/raw/${WEEK}-external-news.json"', clear_step["run"])
+        self.assertIn('"data/raw/${WEEK}-techcrunch.json"', clear_step["run"])
+
+        analyze_clear_step = next(
+            step
+            for step in analyze_steps
+            if step.get("name") == "Clear analyze run-scoped external evidence destinations"
+        )
+        analyze_download_index = next(
+            index
+            for index, step in enumerate(analyze_steps)
+            if step.get("name") == "Download raw crawl artifact"
+        )
+        self.assertLess(analyze_steps.index(analyze_clear_step), analyze_download_index)
+        self.assertIn('"data/raw/${WEEK}-external-news.json"', analyze_clear_step["run"])
+        self.assertIn('"data/raw/${WEEK}-techcrunch.json"', analyze_clear_step["run"])
+        self.assertIn('[[ "$WEEK" =~ ^[0-9]{4}-W[0-9]{2}$ ]]', analyze_clear_step["run"])
+        workflow_text = Path(".github/workflows/crawl-and-publish.yml").read_text(encoding="utf-8")
+        self.assertNotIn("%Y-W%V", workflow_text)
+        self.assertGreaterEqual(workflow_text.count("%G-W%V"), 5)
+
     def test_analysis_artifacts_and_promotion_are_run_scoped(self) -> None:
         workflow = yaml.safe_load(
             Path(".github/workflows/crawl-and-publish.yml").read_text(encoding="utf-8")

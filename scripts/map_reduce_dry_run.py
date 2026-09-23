@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from scripts.analysis_content_security import (
+        load_external_url_allowlist,
+        normalize_evidence_url,
+    )
     from scripts.analysis_gate import validate_analysis, validate_publish_quality
     from scripts.analyze_fallback import find_previous_summary
     from scripts.model_pricing import estimate_cost_usd
@@ -34,6 +38,10 @@ try:
     from scripts.sanitize_repo_content import sanitize_repo_payload
 except ModuleNotFoundError:  # pragma: no cover - script execution path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.analysis_content_security import (
+        load_external_url_allowlist,
+        normalize_evidence_url,
+    )
     from scripts.analysis_gate import validate_analysis, validate_publish_quality
     from scripts.analyze_fallback import find_previous_summary
     from scripts.model_pricing import estimate_cost_usd
@@ -87,6 +95,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default="local", help="Stable run id to include in contracts.")
     parser.add_argument(
         "--press-context", type=Path, help="Rendered press context markdown, if available."
+    )
+    parser.add_argument(
+        "--external-news-json",
+        type=Path,
+        help="Structured run-scoped external-news artifact used to authorize press URLs.",
+    )
+    parser.add_argument(
+        "--correlations-json",
+        type=Path,
+        help="Structured run-scoped correlation artifact used to authorize press URLs.",
     )
     parser.add_argument("--analyzed-dir", type=Path, default=ROOT / "data" / "analyzed")
     parser.add_argument(
@@ -364,9 +382,14 @@ def map_press(
     press_path: Path | None,
     press_ref: ArtifactRef | None,
     raw_ref: ArtifactRef,
+    allowed_external_urls: set[str] | None = None,
 ) -> dict[str, Any]:
     content = press_path.read_text(encoding="utf-8") if press_path and press_path.exists() else ""
-    articles = extract_press_articles(content)
+    articles = [
+        article
+        for article in extract_press_articles(content)
+        if normalize_evidence_url(article["url"]) in (allowed_external_urls or set())
+    ]
     payload = base_map_payload(
         run_id=run_id,
         week=week,
@@ -939,10 +962,15 @@ def build_qa_report(
     baseline_summary: Path | None,
     source: str,
     model: str,
+    allowed_external_urls: set[str],
 ) -> dict[str, Any]:
     structural_errors, word_count = validate_analysis(candidate_text, raw_payload, current_datetime)
     publish_errors, gates = validate_publish_quality(
-        candidate_text, raw_payload, source=source, model=model
+        candidate_text,
+        raw_payload,
+        source=source,
+        model=model,
+        allowed_external_urls=allowed_external_urls,
     )
     non_provenance_errors = [
         error for error in publish_errors if not error.startswith("AI provenance")
@@ -1011,6 +1039,11 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
     if raw_ref is None:
         raise ValueError(f"raw JSON not found: {args.raw_json}")
     press_ref = file_ref(args.press_context)
+    allowed_external_urls, evidence_errors = load_external_url_allowlist(
+        [args.external_news_json, args.correlations_json]
+    )
+    if evidence_errors:
+        raise ValueError("; ".join(evidence_errors))
     previous_summary = find_previous_summary(week, args.analyzed_dir)
     previous_ref = file_ref(previous_summary)
 
@@ -1043,6 +1076,7 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
             press_path=args.press_context,
             press_ref=press_ref,
             raw_ref=raw_ref,
+            allowed_external_urls=allowed_external_urls,
         ),
         "prior_continuity": lambda: map_prior(
             run_id=args.run_id,
@@ -1137,6 +1171,7 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
         baseline_summary=args.baseline_summary,
         source=args.analysis_source,
         model=args.analysis_model,
+        allowed_external_urls=allowed_external_urls,
     )
     reduce_duration = round(time.monotonic() - reduce_started, 3)
     reduce_input_tokens = sum(metric.output_tokens for metric in map_stage_metrics)

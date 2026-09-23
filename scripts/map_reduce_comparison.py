@@ -23,9 +23,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from scripts.analysis_content_security import load_external_url_allowlist
     from scripts.analysis_gate import validate_analysis, validate_publish_quality
 except ModuleNotFoundError:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.analysis_content_security import load_external_url_allowlist
     from scripts.analysis_gate import validate_analysis, validate_publish_quality
 
 COMPARISON_SCHEMA = "comparison_report_v1"
@@ -113,13 +115,20 @@ def compute_evidence_coverage_from_ledgers(
 
 
 def analyze_single_pass(
-    summary_path: Path, raw_payload: dict[str, Any], current_datetime: str
+    summary_path: Path,
+    raw_payload: dict[str, Any],
+    current_datetime: str,
+    allowed_external_urls: set[str] | None = None,
 ) -> ArtifactInfo:
     """Analyze the single-pass baseline artifact."""
     text = summary_path.read_text(encoding="utf-8")
     structural_errors, word_count = validate_analysis(text, raw_payload, current_datetime)
     publish_errors, _gates = validate_publish_quality(
-        text, raw_payload, source="copilot-cli", model="claude-sonnet-4.6"
+        text,
+        raw_payload,
+        source="copilot-cli",
+        model="claude-sonnet-4.6",
+        allowed_external_urls=allowed_external_urls or set(),
     )
     non_provenance = [e for e in publish_errors if not e.startswith("AI provenance")]
     gate_passed = not structural_errors and not non_provenance
@@ -135,7 +144,10 @@ def analyze_single_pass(
 
 
 def analyze_map_reduce(
-    candidate_dir: Path, raw_payload: dict[str, Any], current_datetime: str
+    candidate_dir: Path,
+    raw_payload: dict[str, Any],
+    current_datetime: str,
+    allowed_external_urls: set[str] | None = None,
 ) -> tuple[ArtifactInfo, dict[str, Any]]:
     """Analyze the map/reduce candidate artifact and QA report."""
     week = str(raw_payload.get("week") or "").strip()
@@ -155,7 +167,11 @@ def analyze_map_reduce(
     text = candidate_path.read_text(encoding="utf-8")
     structural_errors, word_count = validate_analysis(text, raw_payload, current_datetime)
     publish_errors, _gates = validate_publish_quality(
-        text, raw_payload, source="map-reduce-dry-run", model="local-deterministic"
+        text,
+        raw_payload,
+        source="map-reduce-dry-run",
+        model="local-deterministic",
+        allowed_external_urls=allowed_external_urls or set(),
     )
     non_provenance = [e for e in publish_errors if not e.startswith("AI provenance")]
     gate_passed = not structural_errors and not non_provenance
@@ -461,6 +477,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Map/reduce candidate output directory.",
     )
     parser.add_argument(
+        "--external-news-json",
+        type=Path,
+        help="Exact run-scoped external-news artifact used by both analysis paths.",
+    )
+    parser.add_argument(
+        "--correlations-json",
+        type=Path,
+        help="Exact run-scoped correlation artifact used by both analysis paths.",
+    )
+    parser.add_argument(
         "--current-datetime",
         default=datetime.now(UTC).isoformat(),
         help="ISO-8601 timestamp for the comparison run.",
@@ -483,9 +509,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     raw_payload = json.loads(args.raw_json.read_text(encoding="utf-8"))
     week = raw_payload.get("week", "unknown")
 
-    single_pass = analyze_single_pass(args.single_pass_summary, raw_payload, args.current_datetime)
+    allowed_external_urls, evidence_errors = load_external_url_allowlist(
+        [args.external_news_json, args.correlations_json]
+    )
+    if evidence_errors:
+        raise ValueError("; ".join(evidence_errors))
+    single_pass = analyze_single_pass(
+        args.single_pass_summary,
+        raw_payload,
+        args.current_datetime,
+        allowed_external_urls,
+    )
     map_reduce, mr_extra = analyze_map_reduce(
-        args.candidate_dir, raw_payload, args.current_datetime
+        args.candidate_dir,
+        raw_payload,
+        args.current_datetime,
+        allowed_external_urls,
     )
 
     report = generate_comparison_report(
@@ -537,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         report = run(args)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
