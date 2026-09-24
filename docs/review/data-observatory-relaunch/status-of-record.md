@@ -2,7 +2,7 @@
 title: Data Observatory Relaunch Status of Record
 description: Single reconciled view of delivered versus pending relaunch work across the three remediation plans, the PRD, and the BRD
 author: SquadScope Squad
-ms.date: 2026-08-08
+ms.date: 2026-09-24
 ms.topic: reference
 keywords:
   - status of record
@@ -24,11 +24,12 @@ gate matrix and the acceptance decision.
 - PRD: [claracle-data-observatory-relaunch.md](../../processed/claracle-data-observatory-relaunch.md)
 - BRD: [claracle-data-observatory-relaunch-brd.md](../../processed/claracle-data-observatory-relaunch-brd.md)
 
-Reconciled through 2026-08-08. Sponsor decision: **NO-GO / SUPERSEDED** at the
+Reconciled through 2026-08-08; CR-04 and CR-06 status updated 2026-09-24. Sponsor decision: **NO-GO / SUPERSEDED** at the
 immutable visual-review revision `f37b49d`. The feature-complete relaunch did not
 receive final release acceptance. Its evidence is frozen as the historical baseline,
 and the remaining interaction and live assistive-technology findings carry forward to
-BRD-CLARACLE-003. Both rollout flags stay disabled; repository-page activation is
+BRD-CLARACLE-003. `repo_pages` stays disabled; dynamic topic creation has been active since
+2026-08-09, bounded to the reviewed `local-first` canary (PR #684). Repository-page activation is
 cancelled in favor of the consolidated repository migration.
 
 **Phase 7 Acceptance Gates** (tracking PR #677):
@@ -45,12 +46,11 @@ cancelled in favor of the consolidated repository migration.
 | Timing budget approval | timing-budget owner, URL, jmservera | Approved 2026-08-08 and enforced in `ci.yml`; see [timing-analysis.md](timing-analysis.md#approval-chain) |
 | Visual interaction captures | Amy, Fry | Carried forward to BRD-CLARACLE-003; see [visual review handoff](visual-review-handoff-2026-08-07.md) |
 | Accessibility (NFR-005) live screen-reader review | Amy, Fry | Carried forward to BRD-CLARACLE-003; see [owner action register](owner-action-register.md#accessibility-acceptance) |
-| Dynamic-topic canary (`local-first`) approval | Hermes, jmservera | [owner-action-register.md](owner-action-register.md#proposed-dynamic-topic-canary-2026-08-08) |
-| Cost experiment dispatch (Q-01 / NFR-009) | URL, budget owner | [owner-action-register.md](owner-action-register.md#incremental-generation-cost-acceptance) |
-| Dynamic activation transaction | jmservera | [owner-action-register.md](owner-action-register.md#sponsor-rollout-decision); repository-page activation is superseded and remains disabled |
+| Dynamic-topic canary (`local-first`) post-activation review and expansion | Amy, Hermes, jmservera | Approved and activated 2026-08-09 (PR #684); transaction review and further slugs are tracked in #798. See [owner-action-register.md](owner-action-register.md#proposed-dynamic-topic-canary-2026-08-08) |
+| Dynamic activation transaction | jmservera | Dynamic topic creation activated 2026-08-09 for `local-first` only (PR #684); see [owner-action-register.md](owner-action-register.md#sponsor-rollout-decision). Repository-page activation is superseded and stays disabled |
 
 Analytics and search (FR-035 / NFR-007 / NFR-008) closed 2026-08-08; the `local-first`
-canary revision is staged (`allow_topics`, `enabled = false`) pending approval.
+canary was approved and activated 2026-08-09 (PR #684, bounded by `allow_topics`). Post-activation review and expansion are tracked in #798.
 
 ## Source plans
 
@@ -88,16 +88,16 @@ canary revision is staged (`allow_topics`, `enabled = false`) pending approval.
 | Deploy / hydration parity + CI guard    | Done      | Deploy hydration is restored (`#628`/`#632`/`#634`/`#637`); the `#641` guard satisfies NFR-012 reference integrity; the `publish-hydration-parity` CI job reproduces the deploy publish-hydration and validates the promotion record (`scripts/publish_hydration.py`) for NFR-011 |
 | Podcaster release smoke (dry-run gate)  | Done      | Blocking post-deploy gate green (`#636`/`#639`/`#643`/`#645`)                    |
 | FR-041 internal link checking           | Done      | `.github/workflows/ci.yml` runs `scripts/check_internal_links.py public --base-url "https://claracle.com/"` in the `production-site` job, in addition to test-level coverage (`tests/test_internal_link_checker.py`); PRD R-03 reconciled Closed |
-| Hugo/Pagefind timing separation         | Done      | CI records separate report-only Hugo and Pagefind durations; Q-01 workload attribution remains pending |
+| Hugo/Pagefind timing separation         | Done      | CI records separate report-only Hugo and Pagefind durations; Q-01 workload attribution was supplied by run 31305223877 (2026-08-09) |
 | Security sign-off (NFR-004)             | Done      | All ten findings SEC-01 through SEC-10 carry dated dispositions (2026-08-04 and 2026-08-06); sponsor (jmservera) acceptance recorded 2026-08-06 in `security-sign-off-checklist.md` |
 | Accessibility evidence (NFR-005)        | Partial   | Fry accepted automated axe/keyboard/focus-trap/responsive coverage 2026-08-08 (a11y-perf passing locally at `f37b49d`; axe + keyboard via retained CI run 31160859598); live screen-reader (AT) pass remains outstanding — see [owner-action-register.md](owner-action-register.md#accessibility-acceptance) |
 | Real Podcaster downstream run (NFR-002 / R-04) | Done | jmservera authorized and dispatched `2026-W32` / publish run `30782430176` on 2026-08-04 ([Actions run 30908778884](https://github.com/jmservera/SquadScope/actions/runs/30908778884), conclusion success; downstream job `podcast-2026-W32-d07bb05dc073`, response status `accepted`); Hermes and URL accepted the environment amendment and workflow controls in SEC-09 and SEC-10 |
 | Refreshed visual acceptance             | Partial   | Amy accepted the rendered visual matrix 2026-08-08 (64 screenshots at `f37b49d`, `observatory-visual-regression.spec.mjs` 68/68); `#622`/`#626` hardening closed 2026-08-04; manual interaction-state captures remain the open step — see [visual-review-handoff-2026-08-07.md](visual-review-handoff-2026-08-07.md#disposition) |
 | GA4 + GSC connection + baseline (FR-035) | Done     | Connection complete; numeric baseline transcribed 2026-08-08 (NFR-007: 51 GA4 sessions, 149 GSC impressions, 294 indexed pages); NFR-008 denied/granted production consent observations captured 2026-08-08 via private-session HAR |
 | External metadata and feed validation   | Partial   | [Production feed and source-level metadata evidence](automated-acceptance-evidence-2026-08-03.md) is retained; social preview debuggers, Rich Results, Schema.org, and named reviewer conclusions remain pending |
-| Incremental generation cost (Q-01 / NFR-009) | Partial | Report-only cumulative experiment is implemented; retained 3/5-run artifacts and budget-owner conclusion remain pending |
+| Incremental generation cost (Q-01 / NFR-009) | Done | Run 31305223877 (3 repetitions, artifact retained until 2026-11-07); budget-owner conclusion recorded 2026-08-09: report-only, dismissed as a launch gate. See [owner action register](owner-action-register.md#incremental-generation-cost-acceptance) |
 | `repo_pages` rollout (FR-020-022)       | Superseded, not enabled | Activation cancelled 2026-08-08 by BRD-CLARACLE-003 BR-003; identity, lifecycle, alias, and rollback evidence remains migration input |
-| `dynamic_topic_creation` rollout (FR-004) | Approved in principle, not enabled | Security disposition and one approved canary remain required before activation |
+| `dynamic_topic_creation` rollout (FR-004) | Enabled (bounded canary) | Activated 2026-08-09 for `local-first` only (PR #684, Hermes/URL/sponsor approved). Post-activation transaction review and one-slug-at-a-time expansion remain, tracked in #798 |
 | Sponsor rollout approval                | Done with conditions | Separate decisions recorded on 2026-08-05; see [owner action register](owner-action-register.md#sponsor-rollout-decision) |
 
 ## Epic issue dispositions
@@ -197,7 +197,7 @@ holds the platform-level rows; this register adds ownership and sequencing.
 | Real Podcaster downstream run (NFR-002 / R-04) | URL     | Complete: protected run and reviewer dispositions retained | [Owner action register](owner-action-register.md#protected-real-podcaster-run) |
 | Refreshed visual acceptance                | Amy         | Populated content render                     | [Screenshot capture checklist](screenshots/README.md)               |
 | External metadata and feed validation      | Amy / jmservera | External debugger and production access   | [Owner action register](owner-action-register.md#external-metadata-and-feed-validation) |
-| Incremental generation cost (Q-01 / NFR-009) | URL       | Dispatch immutable workload variants and obtain budget-owner review | [Owner action register](owner-action-register.md#incremental-generation-cost-acceptance) |
+| Incremental generation cost (Q-01 / NFR-009) | URL       | None; complete 2026-08-09 (run 31305223877, budget-owner conclusion recorded) | [Owner action register](owner-action-register.md#incremental-generation-cost-acceptance) |
 | Lighthouse follow-ups (`#626`)             | Amy / Fry   | None; independent hardening                  | `#626`                                                              |
 | Post-review UX polish (`#622`)             | Amy         | None; non-blocking                           | `#622`                                                              |
 | Sponsor rollout approval                   | jmservera   | Complete with flag-specific conditions        | [Owner action register](owner-action-register.md#sponsor-rollout-decision) |
@@ -209,5 +209,5 @@ These are out of scope for the readiness reconciliation and each needs its own p
 
 - GA4/GSC baseline transcription and production consent evidence (connection and sitemap submission are complete)
 - [`repo_pages` rollout](../../../.copilot-tracking/plans/2026-08-02/claracle-gated-rollout-cost-plan.instructions.md) (requires identity, lifecycle, security, and sponsor approval)
-- [`dynamic_topic_creation` rollout](../../../.copilot-tracking/plans/2026-08-02/claracle-gated-rollout-cost-plan.instructions.md) (requires preview, canary, security, and sponsor approval)
-- [Incremental-generation-cost experiment](../../../.copilot-tracking/plans/2026-08-02/claracle-gated-rollout-cost-plan.instructions.md) (Q-01 / NFR-009)
+- [`dynamic_topic_creation` rollout](../../../.copilot-tracking/plans/2026-08-02/claracle-gated-rollout-cost-plan.instructions.md) (requires preview, canary, security, and sponsor approval; `local-first` canary activated 2026-08-09 via PR #684)
+- [Incremental-generation-cost experiment](../../../.copilot-tracking/plans/2026-08-02/claracle-gated-rollout-cost-plan.instructions.md) (Q-01 / NFR-009; completed 2026-08-09, run 31305223877)
