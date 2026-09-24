@@ -106,6 +106,11 @@ class WorkflowSecurityTests(unittest.TestCase):
             step for step in analyze_steps if step.get("name") == "Run synthesis step (Step 1)"
         )
         analysis = next(step for step in analyze_steps if step.get("name") == "Run analysis")
+        prompt_preflight_step = next(
+            step
+            for step in analyze_steps
+            if step.get("name") == "Render and preflight analysis prompt"
+        )
 
         for step in (synthesis, analysis):
             script = step["run"]
@@ -125,6 +130,94 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertNotIn('rm -rf "$COPILOT_ISOLATED_ROOT"', analysis["run"])
         self.assertIn('--allow "$SYNTHESIS_LOG"', synthesis["run"])
         self.assertIn('--allow "$COPILOT_LOG"', analysis["run"])
+        self.assertIn('--allow-output "output/narrative.md"', synthesis["run"])
+        self.assertIn('--allow-output "output/analysis.md"', analysis["run"])
+        self.assertNotIn('--allow-output "output/transcript.md"', analysis["run"])
+        self.assertNotIn('--share "output/transcript.md"', analysis["run"])
+        prompt_preflight_run = prompt_preflight_step["run"]
+        metrics_hydration = prompt_preflight_run.index(
+            "git checkout origin/publish -- data/metrics/"
+        )
+        transcript_cleanup = prompt_preflight_run.index("rm -f data/metrics/copilot-transcript.md")
+        prompt_preflight = prompt_preflight_run.index("SYNTHESIS_ARGS=()")
+        self.assertLess(metrics_hydration, transcript_cleanup)
+        self.assertLess(transcript_cleanup, prompt_preflight)
+
+    def test_production_copilot_outputs_are_validated_before_acceptance(self) -> None:
+        workflow = yaml.safe_load(
+            Path(".github/workflows/crawl-and-publish.yml").read_text(encoding="utf-8")
+        )
+        analyze_steps = workflow["jobs"]["analyze"]["steps"]
+        synthesis_run = next(
+            step["run"]
+            for step in analyze_steps
+            if step.get("name") == "Run synthesis step (Step 1)"
+        )
+        analysis_run = next(
+            step["run"] for step in analyze_steps if step.get("name") == "Run analysis"
+        )
+
+        synthesis_validation = synthesis_run.index("python3 scripts/ai_output_guard.py validate")
+        synthesis_copy = synthesis_run.index(
+            "python3 scripts/isolated_copilot_workspace.py copy",
+            synthesis_validation,
+        )
+        analysis_validation = analysis_run.index("python3 scripts/ai_output_guard.py validate")
+        analysis_copy = analysis_run.index(
+            'python3 "$COPILOT_ISOLATION_TOOL" copy',
+            analysis_validation,
+        )
+
+        self.assertLess(synthesis_validation, synthesis_copy)
+        self.assertLess(analysis_validation, analysis_copy)
+        self.assertIn('--output "$SYNTHESIS_ISOLATED_OUTPUT"', synthesis_run)
+        self.assertIn('--token-file "$SYNTHESIS_CANARY"', synthesis_run)
+        self.assertIn('--output "$COPILOT_ISOLATED_OUTPUT"', analysis_run)
+        self.assertIn('--token-file "$CANARY_FILE"', analysis_run)
+
+    def test_publish_promotion_purges_retired_transcript_after_publish_checkout(self) -> None:
+        workflow = yaml.safe_load(
+            Path(".github/workflows/crawl-and-publish.yml").read_text(encoding="utf-8")
+        )
+        commit_run = next(
+            step["run"]
+            for step in workflow["jobs"]["generate"]["steps"]
+            if step.get("name") == "Commit generated content to data branch"
+        )
+
+        publish_checkout = commit_run.index(
+            'git checkout -f -B "$DATA_BRANCH" "origin/$DATA_BRANCH"'
+        )
+        transcript_cleanup = commit_run.index(
+            "rm -f data/metrics/copilot-transcript.md", publish_checkout
+        )
+        state_comparison = commit_run.index('diff -qr --no-dereference "$candidate_path"')
+        backup = commit_run.index("python3 publish-safety-tool.py backup-existing")
+        stage = commit_run.index('git add -A -- "${ADD_PATHS[@]}"')
+
+        self.assertLess(transcript_cleanup, state_comparison)
+        self.assertLess(transcript_cleanup, backup)
+        self.assertLess(transcript_cleanup, stage)
+        self.assertIn(
+            "GENERATED_STATE_CHANGED=true", commit_run[transcript_cleanup:state_comparison]
+        )
+        stale_detection = commit_run.index(
+            'git cat-file -e "origin/$DATA_BRANCH:data/metrics/copilot-transcript.md"'
+        )
+        no_change_exit = commit_run.index('git status --short -- "${GENERATED_PATHS[@]}"')
+        candidate_cleanup = commit_run.index("rm -f data/metrics/copilot-transcript.md")
+        archive = commit_run.index('tar -cf generated-state.tar "${ARCHIVE_PATHS[@]}"')
+        self.assertLess(candidate_cleanup, archive)
+        self.assertLess(stale_detection, no_change_exit)
+        self.assertIn(
+            'git ls-remote --exit-code --heads origin "$DATA_BRANCH"',
+            commit_run[:stale_detection],
+        )
+        self.assertIn('if [ "$LS_REMOTE_STATUS" -ne 2 ]; then', commit_run[:no_change_exit])
+        self.assertIn(
+            '[ "$PUBLISH_HAS_RETIRED_TRANSCRIPT" = false ]',
+            commit_run[stale_detection:no_change_exit],
+        )
 
     def test_analysis_gates_receive_run_scoped_external_evidence(self) -> None:
         workflow = yaml.safe_load(
@@ -650,7 +743,8 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertNotIn('--allow "$TRANSCRIPT_FILE"', run_analysis)
         self.assertIn('--allow "$COPILOT_LOG"', run_analysis)
         self.assertIn('--allow-output "output/analysis.md"', run_analysis)
-        self.assertIn('--allow-output "output/transcript.md"', run_analysis)
+        self.assertNotIn('--allow-output "output/transcript.md"', run_analysis)
+        self.assertNotIn('--share "output/transcript.md"', run_analysis)
         self.assertNotIn("git checkout -- .squad", run_analysis)
         self.assertIn(
             "Read input/prompt.md. Write the complete weekly analysis markdown to output/analysis.md.",
@@ -806,6 +900,9 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertGreater(download_index, hydrate_index)
         self.assertLess(download_index, summary_index)
         self.assertLess(summary_index, commit_index)
+
+        hydrate_step = generate_job["steps"][hydrate_index]
+        self.assertIn("rm -f data/metrics/copilot-transcript.md", hydrate_step["run"])
 
         download_step = generate_job["steps"][download_index]
         self.assertIn("scripts/download_run_artifact.py", download_step["run"])
@@ -976,6 +1073,7 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertNotIn(
             'git checkout origin/publish -- "$path" 2>/dev/null || true', deploy_hydrate
         )
+        self.assertIn("rm -f data/metrics/copilot-transcript.md", deploy_hydrate)
 
         self.assertIn("--force-with-lease", commit)
         self.assertIn("git diff --cached --quiet && exit 0", commit)
@@ -1190,6 +1288,7 @@ class WorkflowConfigTests(unittest.TestCase):
 
         self.assertIn("data/taxonomy/tags.json", sync_run)
         self.assertIn("data/taxonomy/topic-candidates.json", sync_run)
+        self.assertIn("rm -f data/metrics/copilot-transcript.md", sync_run)
         self.assertIn("dynamic_topic: true", sync_run)
         self.assertIn("grep '/_index.md$' || true", sync_run)
         self.assertIn("python3 scripts/taxonomy_registry.py", sync_run)

@@ -708,6 +708,7 @@ jobs:
           # Hydrate metrics ledger from publish before writing this run's prompt/preflight artifacts.
           git fetch origin publish 2>/dev/null && \
             git checkout origin/publish -- data/metrics/ 2>/dev/null || true
+          rm -f data/metrics/copilot-transcript.md
           SYNTHESIS_ARGS=()
           if [ "${IN_SYNTHESIS_AVAILABLE:-false}" = "true" ] && [ -f "${IN_SYNTHESIS_FILE:-}" ]; then
             SYNTHESIS_ARGS=(--synthesis-input "$IN_SYNTHESIS_FILE")
@@ -893,7 +894,6 @@ jobs:
                 --legacy-preflight-report "$LEGACY_PREFLIGHT_JSON" \
                 --preflight-report-md "$PREFLIGHT_REPORT_MD"
             fi
-            TRANSCRIPT_FILE="data/metrics/copilot-transcript-attempt-${ATTEMPT}.md"
             GATE_REPORT="$DIAGNOSTICS_DIR/gate-copilot-cli-attempt-${ATTEMPT}.json"
             CANDIDATE_SNAPSHOT="$DIAGNOSTICS_DIR/candidate-copilot-cli-attempt-${ATTEMPT}.md"
             COPILOT_LOG="$DIAGNOSTICS_DIR/copilot-cli-attempt-${ATTEMPT}.log"
@@ -902,8 +902,7 @@ jobs:
             COPILOT_ISOLATED_ROOT="${RUNNER_TEMP}/copilot-analysis-isolated-${ATTEMPT}"
             COPILOT_ISOLATED_STATE="${RUNNER_TEMP}/copilot-analysis-isolated-${ATTEMPT}.json"
             COPILOT_ISOLATED_OUTPUT="$COPILOT_ISOLATED_ROOT/output/analysis.md"
-            COPILOT_ISOLATED_TRANSCRIPT="$COPILOT_ISOLATED_ROOT/output/transcript.md"
-            rm -f "$OUTPUT_FILE" "$TRANSCRIPT_FILE" "$COPILOT_LOG" "$COPILOT_FAILURE_REPORT"
+            rm -f "$OUTPUT_FILE" "$COPILOT_LOG" "$COPILOT_FAILURE_REPORT"
             python3 "$COPILOT_ISOLATION_TOOL" cleanup \
               --root "$COPILOT_ISOLATED_ROOT"
             rm -f "$COPILOT_ISOLATED_STATE"
@@ -924,8 +923,7 @@ jobs:
               --root "$COPILOT_ISOLATED_ROOT" \
               --state "$COPILOT_ISOLATED_STATE" \
               "${COPILOT_ISOLATED_COPY_ARGS[@]}" \
-              --allow-output "output/analysis.md" \
-              --allow-output "output/transcript.md"
+              --allow-output "output/analysis.md"
             chmod 0444 "$COPILOT_ISOLATED_STATE"
             COPILOT_ISOLATED_SHA256="$(sha256sum "$COPILOT_ISOLATED_STATE" | cut -d' ' -f1)"
 
@@ -943,7 +941,6 @@ jobs:
               --workspace "$COPILOT_ISOLATED_ROOT" \
               --agent weekly-analysis \
               --prompt "Read input/prompt.md. Write the complete weekly analysis markdown to output/analysis.md. The first bytes must be --- and the run is incomplete until output/analysis.md exists and is non-empty. Do not delegate. Do not spawn sub-agents. Do not emit commentary.${REPAIR_CONTEXT}" \
-              --share "output/transcript.md" \
               > "$COPILOT_LOG" 2>&1
             COPILOT_STATUS=$?
             set -e
@@ -958,7 +955,7 @@ jobs:
             if ! python3 "$COPILOT_WORKSPACE_VERIFIER" verify \
               --snapshot "$COPILOT_WORKSPACE_SNAPSHOT" \
               --expected-sha256 "$COPILOT_SNAPSHOT_SHA256"; then
-              echo "::error::Copilot analysis mutated the workspace outside its exact output, transcript, and log files."
+              echo "::error::Copilot analysis mutated the checkout outside its workflow-owned log file."
               exit 1
             fi
             if ! python3 "$COPILOT_ISOLATION_TOOL" verify \
@@ -1013,14 +1010,6 @@ jobs:
               --output "output/analysis.md" \
               --destination "$OUTPUT_FILE" \
               --destination-root "$GITHUB_WORKSPACE"
-            if [ -s "$COPILOT_ISOLATED_TRANSCRIPT" ]; then
-              python3 "$COPILOT_ISOLATION_TOOL" copy \
-                --state "$COPILOT_ISOLATED_STATE" \
-                --expected-sha256 "$COPILOT_ISOLATED_SHA256" \
-                --output "output/transcript.md" \
-                --destination "$TRANSCRIPT_FILE" \
-                --destination-root "$GITHUB_WORKSPACE"
-            fi
 
             FINAL_FAILURE_CLASS=""
             sanitize_agent_output "$OUTPUT_FILE"
@@ -1031,7 +1020,6 @@ jobs:
               cp "$OUTPUT_FILE" "$CANDIDATE_SNAPSHOT" 2>/dev/null || true
               cp "$GATE_REPORT" "$IN_GATE_REPORT_FILE" 2>/dev/null || true
               GATE_PASSED=true
-              FINAL_TRANSCRIPT="$TRANSCRIPT_FILE"
               ANALYSIS_SOURCE="copilot-cli"
               ANALYSIS_MODEL="gpt-5.6-sol"
             else
@@ -1085,18 +1073,6 @@ jobs:
             ANALYSIS_MODEL="none"
           fi
 
-          # Copy final transcript to canonical location
-          if [ -n "${FINAL_TRANSCRIPT:-}" ]; then
-            cp "$FINAL_TRANSCRIPT" data/metrics/copilot-transcript.md 2>/dev/null || true
-          else
-            rm -f data/metrics/copilot-transcript.md
-          fi
-
-          TRANSCRIPT_ARGS=""
-          if [ -f "data/metrics/copilot-transcript.md" ]; then
-            TRANSCRIPT_ARGS="--transcript data/metrics/copilot-transcript.md"
-          fi
-
           python3 scripts/track_token_usage.py \
             --stage analysis \
             --source "$ANALYSIS_SOURCE" \
@@ -1107,13 +1083,10 @@ jobs:
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --prompt-file "$PROMPT_FILE" \
             --output-file "$OUTPUT_FILE" \
-            --input-manifest "$PREFLIGHT_REPORT_JSON" \
-            $TRANSCRIPT_ARGS
+            --input-manifest "$PREFLIGHT_REPORT_JSON"
           ANALYSIS_DURATION=$(( $(date +%s) - ANALYSIS_STARTED ))
           echo "::notice::Analysis path source=$ANALYSIS_SOURCE model=$ANALYSIS_MODEL duration_seconds=$ANALYSIS_DURATION press_context=$PRESS_FILE"
           rm -f "$PROMPT_FILE"
-          # Clean up per-attempt transcripts
-          rm -f data/metrics/copilot-transcript-attempt-*.md
           echo "analysis_source=$ANALYSIS_SOURCE" >> "$GITHUB_OUTPUT"
           echo "analysis_model=$ANALYSIS_MODEL" >> "$GITHUB_OUTPUT"
 
@@ -1332,6 +1305,7 @@ jobs:
               fi
             fi
           done
+          rm -f data/metrics/copilot-transcript.md
           # Migration evidence is reviewed source material committed on main, not
           # generated publish state. Restore it after replacing its parent directory.
           git checkout HEAD -- \
@@ -1558,7 +1532,24 @@ jobs:
             static/datasets/open-source-ai-github-projects-2026/
             static/tools/star-velocity-explorer.json
           )
-          if ! git status --short -- "${GENERATED_PATHS[@]}" | grep -q .; then
+          # Never promote the retired agent-authored transcript; detect a stale copy
+          # on publish so its deletion is committed even when nothing else changed.
+          rm -f data/metrics/copilot-transcript.md
+          PUBLISH_HAS_RETIRED_TRANSCRIPT=false
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null; then
+            git fetch origin "$DATA_BRANCH"
+            if git cat-file -e "origin/$DATA_BRANCH:data/metrics/copilot-transcript.md" 2>/dev/null; then
+              PUBLISH_HAS_RETIRED_TRANSCRIPT=true
+            fi
+          else
+            LS_REMOTE_STATUS=$?
+            if [ "$LS_REMOTE_STATUS" -ne 2 ]; then
+              echo "::error::Unable to inspect $DATA_BRANCH for the retired transcript (git ls-remote exit $LS_REMOTE_STATUS)."
+              exit 1
+            fi
+          fi
+          if [ "$PUBLISH_HAS_RETIRED_TRANSCRIPT" = false ] && \
+            ! git status --short -- "${GENERATED_PATHS[@]}" | grep -q .; then
             echo "No promoted analysis or generated Observatory changes to commit."
             rm -f publish-safety-tool.py promotion-guard-tool.py
             exit 0
@@ -1586,9 +1577,15 @@ jobs:
             git fetch origin "$DEFAULT_BRANCH"
             git checkout -f -B "$DATA_BRANCH" "origin/$DEFAULT_BRANCH"
           fi
+          # The publish checkout restores the retired agent-authored transcript;
+          # remove it before comparison/backup so the deletion is committed.
+          GENERATED_STATE_CHANGED=false
+          if [ -e data/metrics/copilot-transcript.md ] || [ -L data/metrics/copilot-transcript.md ]; then
+            rm -f data/metrics/copilot-transcript.md
+            GENERATED_STATE_CHANGED=true
+          fi
           CANDIDATE_STATE_DIR="$(mktemp -d)"
           tar -xf generated-state.tar -C "$CANDIDATE_STATE_DIR"
-          GENERATED_STATE_CHANGED=false
           for path in "${GENERATED_PATHS[@]}"; do
             path="${path%/}"
             candidate_path="$CANDIDATE_STATE_DIR/$path"
