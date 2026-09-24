@@ -7,6 +7,9 @@ import argparse
 import json
 import math
 import os
+import re
+import shutil
+import tempfile
 import threading
 import time
 from collections import Counter
@@ -96,6 +99,8 @@ class CrawlContext:
     topic_raw: Path
     topic_snapshots: Path
     topic_cache: Path
+    baseline_cache: Path
+    shard_cache: Path
     crawled_at: datetime
     run_started_at: datetime
     since: datetime
@@ -456,6 +461,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default=str(EXPERIMENT_ROOT))
     parser.add_argument("--experiment-id", default=None)
+    parser.add_argument(
+        "--cache-mode",
+        choices=("isolated", "shared"),
+        default="isolated",
+        help=(
+            "isolated (default): each arm gets its own copy of the topic cache taken before "
+            "either arm runs, so the shard arm cannot reuse responses fetched by the baseline. "
+            "shared: both arms use the live topic cache (legacy; biases the shard arm)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -479,6 +494,8 @@ def build_context(args: argparse.Namespace, experiment_dir: Path) -> CrawlContex
         topic_raw=raw_dir(topic_id),
         topic_snapshots=snapshots_dir(topic_id),
         topic_cache=cache_dir(topic_id),
+        baseline_cache=cache_dir(topic_id),
+        shard_cache=cache_dir(topic_id),
         crawled_at=crawled_at,
         run_started_at=crawled_at,
         since=since,
@@ -493,6 +510,36 @@ def build_context(args: argparse.Namespace, experiment_dir: Path) -> CrawlContex
         shard_output_path=experiment_dir / "shard-raw.json",
         shard_snapshot_path=experiment_dir / "shard-stars.json",
     )
+
+
+_EXPERIMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def validate_experiment_id(experiment_id: str) -> str:
+    """Reject IDs that are not a single safe path component."""
+    if not _EXPERIMENT_ID_RE.fullmatch(experiment_id) or ".." in experiment_id:
+        raise ValueError(
+            f"--experiment-id must be a single path component matching "
+            f"{_EXPERIMENT_ID_RE.pattern} without '..': {experiment_id!r}"
+        )
+    return experiment_id
+
+
+def prepare_arm_caches(context: CrawlContext, scratch_dir: Path, mode: str) -> None:
+    """Point each arm at its own cache seeded from the same topic-cache snapshot.
+
+    ``scratch_dir`` must be a fresh, caller-owned temporary directory; arm caches are
+    reconstructible and must not be left beside the experiment artifacts.
+    """
+    if mode == "shared":
+        return
+    for arm in ("baseline", "shard"):
+        arm_cache = scratch_dir / f"{arm}-cache"
+        if context.topic_cache.is_dir():
+            shutil.copytree(context.topic_cache, arm_cache)
+        else:
+            arm_cache.mkdir(parents=True)
+        setattr(context, f"{arm}_cache", arm_cache)
 
 
 def next_experiment_id(output_dir: Path) -> str:
@@ -648,6 +695,9 @@ def validate_item(
     try:
         if not client.has_readme(full_name):
             return None, "missing_readme"
+    except (ShardBudgetExceeded, ExperimentAbort):
+        # Let the worker requeue the item instead of silently dropping the repo.
+        raise
     except RuntimeError as exc:
         client.record_error(f"README lookup failed for {full_name}: {exc}")
         return None, "readme_lookup_failed"
@@ -813,7 +863,9 @@ def build_payload(
 def run_baseline(context: CrawlContext, token: str) -> RunResult:
     started_at = time.monotonic()
     search_plans = build_search_plans(context)
-    client = InstrumentedGitHubClient(token, cache_dir=context.topic_cache, shard_name="baseline")
+    client = InstrumentedGitHubClient(
+        token, cache_dir=context.baseline_cache, shard_name="baseline"
+    )
     previous_stars = load_previous_star_snapshot(
         context.topic_snapshots,
         context.week,
@@ -920,7 +972,7 @@ def run_sharded(context: CrawlContext, token: str, baseline_api_calls: int) -> R
                     plan,
                     InstrumentedGitHubClient(
                         token,
-                        cache_dir=context.topic_cache,
+                        cache_dir=context.shard_cache,
                         shard_name=plan.shard_name,
                         coordinator=coordinator,
                         deadline=time.monotonic() + int(context.args.wall_clock_budget),
@@ -962,7 +1014,7 @@ def run_sharded(context: CrawlContext, token: str, baseline_api_calls: int) -> R
                         validation_queue,
                         InstrumentedGitHubClient(
                             token,
-                            cache_dir=context.topic_cache,
+                            cache_dir=context.shard_cache,
                             shard_name=f"validate-{index + 1}",
                             coordinator=coordinator,
                             deadline=time.monotonic() + int(context.args.wall_clock_budget),
@@ -1109,7 +1161,13 @@ def compare_results(baseline: dict[str, Any], shard: dict[str, Any]) -> dict[str
     }
 
 
-def build_report(experiment_id: str, baseline: RunResult, shard: RunResult) -> dict[str, Any]:
+def build_report(
+    experiment_id: str,
+    baseline: RunResult,
+    shard: RunResult,
+    *,
+    cache_mode: str = "isolated",
+) -> dict[str, Any]:
     baseline_wall = baseline.wall_clock_s or 0.0001
     speedup_pct = round(((baseline_wall - shard.wall_clock_s) / baseline_wall) * 100, 2)
     api_growth_pct = round(
@@ -1141,9 +1199,12 @@ def build_report(experiment_id: str, baseline: RunResult, shard: RunResult) -> d
         verdict = "fail"
     return {
         "experiment_id": experiment_id,
+        "cache_mode": cache_mode,
         "baseline": {
             "wall_clock_s": baseline.wall_clock_s,
             "api_calls": baseline.api_calls,
+            "cache_hits": baseline.cache_hits,
+            "stale_cache_hits": baseline.stale_cache_hits,
             "rate_limit_events": baseline.rate_limit_events,
             "repos_new": len(baseline.payload.get("new_repos", [])),
             "repos_trending": len(baseline.payload.get("trending_repos", [])),
@@ -1151,6 +1212,8 @@ def build_report(experiment_id: str, baseline: RunResult, shard: RunResult) -> d
         "shard": {
             "wall_clock_s": shard.wall_clock_s,
             "api_calls": shard.api_calls,
+            "cache_hits": shard.cache_hits,
+            "stale_cache_hits": shard.stale_cache_hits,
             "rate_limit_events": shard.rate_limit_events,
             "shards_used": shard.shards_used,
             "repos_new": len(shard.payload.get("new_repos", [])),
@@ -1164,6 +1227,10 @@ def build_report(experiment_id: str, baseline: RunResult, shard: RunResult) -> d
             > baseline.secondary_rate_limit_events,
         },
         "verdict": verdict,
+        "partial_failures": {
+            "baseline": list(baseline.partial_failures),
+            "shard": list(shard.partial_failures),
+        },
         "guardrail_events": shard.guardrail_events,
     }
 
@@ -1185,13 +1252,19 @@ def main() -> int:
         return 1
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    experiment_id = args.experiment_id or next_experiment_id(output_dir)
+    try:
+        experiment_id = validate_experiment_id(args.experiment_id or next_experiment_id(output_dir))
+    except ValueError as exc:
+        print(str(exc), file=os.sys.stderr)
+        return 1
     experiment_dir = output_dir / experiment_id
     experiment_dir.mkdir(parents=True, exist_ok=True)
     context = build_context(args, experiment_dir)
-    baseline = run_baseline(context, token)
-    shard = run_sharded(context, token, baseline.api_calls)
-    report = build_report(experiment_id, baseline, shard)
+    with tempfile.TemporaryDirectory(prefix="shard-435-cache-") as scratch:
+        prepare_arm_caches(context, Path(scratch), args.cache_mode)
+        baseline = run_baseline(context, token)
+        shard = run_sharded(context, token, baseline.api_calls)
+    report = build_report(experiment_id, baseline, shard, cache_mode=args.cache_mode)
     report_path = experiment_dir / "report.json"
     write_payload(report_path, report)
     print(

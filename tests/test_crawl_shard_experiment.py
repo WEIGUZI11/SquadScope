@@ -411,3 +411,135 @@ class TestExperimentReport:
             }
         )
         assert _verdict(report) == "inconclusive"
+
+
+class TestArmCacheIsolation:
+    def _context(self, tmp_path: Any) -> Any:
+        topic_cache = tmp_path / "topic-cache"
+        topic_cache.mkdir()
+        (topic_cache / "entry.json").write_text('{"seed": true}', encoding="utf-8")
+        return dataclasses.replace(
+            experiment.build_context(
+                experiment.argparse.Namespace(
+                    since="2026-09-12",
+                    as_of="2026-09-19",
+                    max_results=10,
+                    topic=None,
+                    config=None,
+                ),
+                tmp_path / "exp",
+            ),
+            topic_cache=topic_cache,
+            baseline_cache=topic_cache,
+            shard_cache=topic_cache,
+        )
+
+    def test_isolated_mode_gives_each_arm_an_identical_private_seed(self, tmp_path: Any) -> None:
+        context = self._context(tmp_path)
+        scratch_dir = tmp_path / "scratch"
+        scratch_dir.mkdir()
+
+        experiment.prepare_arm_caches(context, scratch_dir, "isolated")
+
+        assert context.baseline_cache != context.shard_cache
+        assert context.topic_cache not in {context.baseline_cache, context.shard_cache}
+        for arm_cache in (context.baseline_cache, context.shard_cache):
+            assert (arm_cache / "entry.json").read_text(encoding="utf-8") == '{"seed": true}'
+        (context.baseline_cache / "baseline-only.json").write_text("{}", encoding="utf-8")
+        assert not (context.shard_cache / "baseline-only.json").exists()
+        assert not (context.topic_cache / "baseline-only.json").exists()
+
+    def test_shared_mode_keeps_live_topic_cache(self, tmp_path: Any) -> None:
+        context = self._context(tmp_path)
+
+        experiment.prepare_arm_caches(context, tmp_path / "scratch", "shared")
+
+        assert context.baseline_cache == context.topic_cache == context.shard_cache
+
+
+@pytest.mark.parametrize(
+    "bad_id", ["", "..", "../escape", "a/b", "a\\b", ".hidden", "x..y", "a" * 200]
+)
+def test_experiment_id_must_be_single_safe_component(bad_id: str) -> None:
+    with pytest.raises(ValueError):
+        experiment.validate_experiment_id(bad_id)
+
+
+@pytest.mark.parametrize("good_id", ["run1-W38", "shard-435-run-001", "a.b_c"])
+def test_experiment_id_accepts_safe_names(good_id: str) -> None:
+    assert experiment.validate_experiment_id(good_id) == good_id
+
+
+@pytest.mark.parametrize("mode", ["isolated", "shared"])
+def test_report_records_cache_mode(mode: str) -> None:
+    def run(name: str) -> Any:
+        return experiment.RunResult(
+            name=name,
+            payload={"week": "2026-W38", "new_repos": [], "trending_repos": [], "signals": {}},
+            snapshot_payload={"week": "2026-W38", "repository_count": 0, "stars": {}},
+            api_calls=10,
+            cache_hits=0,
+            stale_cache_hits=0,
+            rate_limit_events=0,
+            secondary_rate_limit_events=0,
+            partial_failures=[],
+            wall_clock_s=1.0,
+            shards_used=3,
+            completed=True,
+            guardrail_events=[],
+        )
+
+    report = experiment.build_report("run-x", run("baseline"), run("shard"), cache_mode=mode)
+
+    assert report["cache_mode"] == mode
+    assert report["partial_failures"] == {"baseline": [], "shard": []}
+
+
+class _ReadmeClient:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.errors: list[str] = []
+
+    def has_readme(self, full_name: str) -> bool:
+        raise self._exc
+
+    def record_error(self, message: str) -> None:
+        self.errors.append(message)
+
+
+def _item() -> Any:
+    return experiment.ValidationItem(
+        repo_group="trending", sequence=0, repo={"full_name": "octo/repo"}
+    )
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        experiment.ShardBudgetExceeded("validate-1 exceeded its wall-clock budget."),
+        experiment.ExperimentAbort("secondary rate limit"),
+    ],
+)
+def test_validate_item_propagates_budget_and_abort_for_requeue(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    monkeypatch.setattr(experiment, "significance_skip_reason", lambda repo: None)
+    client = _ReadmeClient(exc)
+
+    with pytest.raises(type(exc)):
+        experiment.validate_item(client, _item(), previous_stars=None, trending_cutoff=None)
+
+    assert client.errors == []
+
+
+def test_validate_item_records_ordinary_readme_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(experiment, "significance_skip_reason", lambda repo: None)
+    client = _ReadmeClient(RuntimeError("HTTP 500"))
+
+    record, reason = experiment.validate_item(
+        client, _item(), previous_stars=None, trending_cutoff=None
+    )
+
+    assert record is None
+    assert reason == "readme_lookup_failed"
+    assert client.errors == ["README lookup failed for octo/repo: HTTP 500"]
