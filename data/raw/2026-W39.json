@@ -1,6 +1,6 @@
 {
   "week": "2026-W39",
-  "crawled_at": "2026-09-21T04:38:48Z",
+  "crawled_at": "2026-09-21T04:38:56Z",
   "new_repos": [
     {
       "id": 1373655162,
@@ -10,12 +10,12 @@
       "full_name": "browser-use/jev-ultrafast",
       "description": "i. am. speed.",
       "language": "Python",
-      "stars": 12647,
+      "stars": 12648,
       "forks": 786,
       "archived": false,
       "disabled": false,
       "created_at": "2026-09-16T21:30:12Z",
-      "updated_at": "2026-09-21T04:38:07Z",
+      "updated_at": "2026-09-21T04:38:56Z",
       "pushed_at": "2026-09-18T16:28:35Z",
       "topics": [],
       "license": "MIT",
@@ -71,7 +71,7 @@
       "description": "Z.ai's coding agent harness. Powerful, intelligent, extensible.",
       "language": "TypeScript",
       "stars": 3154,
-      "forks": 815,
+      "forks": 816,
       "archived": false,
       "disabled": false,
       "created_at": "2026-09-20T12:01:16Z",
@@ -5409,7 +5409,7 @@
       "disabled": false,
       "created_at": "2025-11-24T10:16:47Z",
       "updated_at": "2026-09-21T04:37:04Z",
-      "pushed_at": "2026-09-21T04:38:32Z",
+      "pushed_at": "2026-09-21T04:39:00Z",
       "topics": [
         "ai",
         "assistant",
@@ -11394,7 +11394,7 @@
       "description": "Scrapy, a fast high-level web crawling & scraping framework for Python.",
       "language": "Python",
       "stars": 64428,
-      "forks": 11966,
+      "forks": 11967,
       "archived": false,
       "disabled": false,
       "created_at": "2010-02-22T02:01:14Z",
@@ -12625,11 +12625,11 @@
     "cache_hits": 0,
     "stale_cache_hits": 0,
     "rate_limit_limit": 5000,
-    "rate_limit_remaining": 4545,
-    "rate_limit_reset": 1789969121,
+    "rate_limit_remaining": 4546,
+    "rate_limit_reset": 1789969148,
     "rate_limit_resource": "core",
     "partial_failures": [],
-    "run_id": "35561773566",
+    "run_id": "35561779454",
     "crawl_window": {
       "since": "2026-09-14",
       "until": "2026-09-21"
@@ -12660,6 +12660,6 @@
     "snapshot_path": "data/snapshots/2026-W39-stars.json",
     "source_refresh_policy": "reuse-same-day",
     "crawler_code_sha": "b3299b7eddf262f648b46bf5fda446f177a1053de6836a2719bce881ab098da5",
-    "artifact_checksum": "bdbba5ec5a6f22c010703068b06ccbe92d55f99064221cefafdbed0c66073bea"
+    "artifact_checksum": "feecf751da96fd04f04db728b8c569a498d3868d9b4d82ab39b286b0ed3199df"
   }
 }
