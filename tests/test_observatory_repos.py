@@ -553,16 +553,256 @@ def test_seed_lifecycle_rejects_page_parity_mismatch_without_writing() -> None:
         assert ledger_path.read_bytes() == original_ledger
 
 
+def test_seed_lifecycle_resolves_upstream_rename_to_frozen_identity() -> None:
+    # Regression for jmservera/SquadScope#823: OpenBB-finance/OpenBB was renamed upstream
+    # to openbq-org/OpenBB (same GitHub ID) after the corpus was frozen.
+    tests_root = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory(dir=tests_root) as tmpdir:
+        root = Path(tmpdir)
+        for index, week in enumerate(("2026-W21", "2026-W22", "2026-W23", "2026-W24")):
+            write_week(root, week, [repo_record("Old-Org/Repo", 30 + index, github_id=42)])
+        config_dir = root / "config"
+        config_dir.mkdir()
+        config_path = config_dir / "observatory.toml"
+        config_path.write_text("[repo_pages]\nenabled = true\n", encoding="utf-8")
+        observatory_repos.generate(root)
+        config_path.write_text("[repo_pages]\nenabled = false\n", encoding="utf-8")
+        write_week(root, "2026-W25", [repo_record("new-org/Repo", 40, github_id=42)])
+        page_path = root / "content/repo/old-org-repo/index.md"
+        derived_path = root / "data/derived/observatory/repositories.json"
+        unchanged_before = {path: path.read_bytes() for path in (page_path, derived_path)}
+
+        counts = observatory_repos.seed_lifecycle(root)
+
+        assert counts["qualified_histories"] == 1
+        assert counts["mismatches"] == 0
+        assert {path: path.read_bytes() for path in (page_path, derived_path)} == unchanged_before
+        ledger = json.loads(
+            (root / "data/derived/observatory/repository-lifecycle.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entry = ledger["repositories"]["42"]
+        assert entry["current_full_name"] == "new-org/Repo"
+        assert entry["current_slug"] == "new-org-repo"
+        assert "Old-Org/Repo" in entry["prior_full_names"]
+        assert "old-org-repo" in entry["prior_slugs"]
+
+
+def test_seed_lifecycle_rejects_frozen_surfaces_on_different_rename_steps() -> None:
+    # Pages frozen at A and derived data frozen at B must not both resolve for a history
+    # renamed A -> B -> C; the two frozen surfaces have to agree first.
+    tests_root = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory(dir=tests_root) as tmpdir:
+        root = Path(tmpdir)
+        weeks = ("2026-W21", "2026-W22", "2026-W23", "2026-W24")
+        for index, week in enumerate(weeks):
+            write_week(root, week, [repo_record("a-org/Repo", 30 + index, github_id=42)])
+        config_dir = root / "config"
+        config_dir.mkdir()
+        config_path = config_dir / "observatory.toml"
+        config_path.write_text("[repo_pages]\nenabled = true\n", encoding="utf-8")
+        observatory_repos.generate(root)
+        config_path.write_text("[repo_pages]\nenabled = false\n", encoding="utf-8")
+        derived_path = root / "data/derived/observatory/repositories.json"
+        derived = json.loads(derived_path.read_text(encoding="utf-8"))
+        for item in derived:
+            item["repo_full_name"] = "b-org/Repo"
+            item["repo_slug"] = "b-org-repo"
+        derived_path.write_text(json.dumps(derived), encoding="utf-8")
+        write_week(root, "2026-W25", [repo_record("b-org/Repo", 40, github_id=42)])
+        write_week(root, "2026-W26", [repo_record("c-org/Repo", 41, github_id=42)])
+        ledger_path = root / "data/derived/observatory/repository-lifecycle.json"
+        original_ledger = ledger_path.read_bytes()
+
+        with pytest.raises(ValueError, match="Lifecycle seed parity mismatch"):
+            observatory_repos.seed_lifecycle(root)
+
+        assert ledger_path.read_bytes() == original_ledger
+
+
+def test_seed_lifecycle_keeps_reregistered_old_name_as_a_separate_repository() -> None:
+    # After Old-Org/Repo (ID 42) is renamed, a different repository (ID 99) re-registers the
+    # old name. It must become its own history instead of being merged into ID 42's history.
+    tests_root = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory(dir=tests_root) as tmpdir:
+        root = Path(tmpdir)
+        weeks = ("2026-W21", "2026-W22", "2026-W23", "2026-W24")
+        for index, week in enumerate(weeks):
+            write_week(root, week, [repo_record("Old-Org/Repo", 30 + index, github_id=42)])
+        config_dir = root / "config"
+        config_dir.mkdir()
+        config_path = config_dir / "observatory.toml"
+        config_path.write_text("[repo_pages]\nenabled = true\n", encoding="utf-8")
+        observatory_repos.generate(root)
+        config_path.write_text("[repo_pages]\nenabled = false\n", encoding="utf-8")
+        write_week(root, "2026-W25", [repo_record("new-org/Repo", 40, github_id=42)])
+        write_week(root, "2026-W26", [repo_record("Old-Org/Repo", 5, github_id=99)])
+
+        observatory_repos.seed_lifecycle(root)
+
+        ledger = json.loads(
+            (root / "data/derived/observatory/repository-lifecycle.json").read_text(
+                encoding="utf-8"
+            )
+        )["repositories"]
+        assert ledger["42"]["github_id"] == "42"
+        assert ledger["42"]["current_full_name"] == "new-org/Repo"
+        assert {item["full_name"] for item in ledger["42"]["observations"]} == {
+            "Old-Org/Repo",
+            "new-org/Repo",
+        }
+        assert all(item["github_id"] == "42" for item in ledger["42"]["observations"])
+        assert ledger["99"]["github_id"] == "99"
+        assert ledger["99"]["current_full_name"] == "Old-Org/Repo"
+        assert len(ledger["99"]["observations"]) == 1
+
+        # Once the re-registered repository also qualifies, both histories claim the same
+        # frozen identity and the seed must stop.
+        for index, week in enumerate(("2026-W27", "2026-W28", "2026-W29")):
+            write_week(root, week, [repo_record("Old-Org/Repo", 6 + index, github_id=99)])
+        with pytest.raises(ValueError, match="claimed by both"):
+            observatory_repos.seed_lifecycle(root)
+
+
+def test_published_identities_rejects_key_and_github_id_mismatch() -> None:
+    published = {("Old-Org/Repo", "old-org-repo")}
+    corrupted = _history("42", "Old-Org/Repo")
+    corrupted.github_id = "99"
+
+    with pytest.raises(ValueError, match="mismatched GitHub ID"):
+        observatory_repos.published_identities([corrupted], published)
+
+
+def _observation(full_name: str, week: str, github_id: str | None) -> object:
+    owner, repo = full_name.split("/", 1)
+    return observatory_repos.RepoObservation(
+        week=week,
+        source_bucket="trending_repos",
+        owner=owner,
+        name=repo,
+        full_name=full_name,
+        url=f"https://github.com/{full_name}",
+        description=None,
+        language="Python",
+        stars=10,
+        forks=1,
+        created_at="2026-01-01T00:00:00Z",
+        topics=(),
+        source_path=f"data/raw/{week}.json",
+        github_id=github_id,
+    )
+
+
+def _history(
+    key: str,
+    name: str,
+    *,
+    priors: tuple[str, ...] = (),
+    prior_github_id: str | None = None,
+) -> object:
+    owner, repo = name.split("/", 1)
+    github_id = None if key.startswith("name:") else key
+    observed_id = prior_github_id if prior_github_id is not None else github_id
+    observations = [
+        _observation(prior, f"2026-W{20 + index:02d}", observed_id)
+        for index, prior in enumerate(priors)
+    ]
+    observations.append(_observation(name, "2026-W30", github_id))
+    return observatory_repos.RepositoryHistory(
+        key=key,
+        github_id=github_id,
+        node_id=None,
+        display_name=name,
+        owner=owner,
+        name=repo,
+        slug=observatory_repos.repo_slug(name),
+        url=f"https://github.com/{name}",
+        observations=observations,
+        prior_full_names=set(priors),
+        prior_slugs={observatory_repos.repo_slug(prior) for prior in priors},
+    )
+
+
+def test_published_identity_only_resolves_recorded_renames() -> None:
+    published = {("Old-Org/Repo", "old-org-repo"), ("octo/other", "octo-other")}
+    renamed = _history("42", "new-org/Repo", priors=("Old-Org/Repo",))
+    unrelated = _history("7", "someone/else")
+    unchanged = _history("8", "octo/other")
+
+    assert observatory_repos.published_identity(renamed, published) == (
+        "Old-Org/Repo",
+        "old-org-repo",
+    )
+    assert observatory_repos.published_identity(unrelated, published) == (
+        "someone/else",
+        "someone-else",
+    )
+    assert observatory_repos.published_identities([renamed, unchanged], published) == published
+    # A qualified repository missing from the frozen surface still breaks parity.
+    assert (
+        observatory_repos.published_identities([renamed, unchanged, unrelated], published)
+        != published
+    )
+    # A prior name without its recorded prior slug is not rename evidence.
+    unproven = _history("43", "new-org/Repo")
+    unproven.prior_full_names.add("Old-Org/Repo")
+    assert observatory_repos.published_identity(unproven, published) == (
+        "new-org/Repo",
+        "new-org-repo",
+    )
+
+
+def test_published_identity_requires_stable_id_for_renames() -> None:
+    published = {("Old-Org/Repo", "old-org-repo")}
+    fallback = _history("name:new-org/repo", "new-org/Repo", priors=("Old-Org/Repo",))
+
+    assert fallback.github_id is None
+    assert observatory_repos.published_identity(fallback, published) == (
+        "new-org/Repo",
+        "new-org-repo",
+    )
+    assert observatory_repos.published_identities([fallback], published) != published
+
+
+def test_published_identity_rejects_prior_observed_under_a_different_id() -> None:
+    # apply_configured_renames() can merge a different repository into a stable-ID target and
+    # copy its name/slug into the target's priors; that is not proof of the same repository.
+    published = {("Old-Org/Repo", "old-org-repo")}
+    merged = _history("42", "new-org/Repo", priors=("Old-Org/Repo",), prior_github_id="77")
+    unidentified = _history("42", "new-org/Repo", priors=("Old-Org/Repo",), prior_github_id="")
+
+    for history in (merged, unidentified):
+        assert observatory_repos.published_identity(history, published) == (
+            "new-org/Repo",
+            "new-org-repo",
+        )
+        assert observatory_repos.published_identities([history], published) != published
+
+
+def test_published_identities_rejects_two_histories_claiming_one_identity() -> None:
+    published = {("Old-Org/Repo", "old-org-repo")}
+    renamed = _history("42", "new-org/Repo", priors=("Old-Org/Repo",))
+    squatter = _history("99", "Old-Org/Repo")
+
+    with pytest.raises(ValueError, match="claimed by both"):
+        observatory_repos.published_identities([renamed, squatter], published)
+
+
 def test_frozen_corpus_lifecycle_seed_has_expected_parity() -> None:
     config = observatory_repos.load_config(REPO_ROOT)
     ledger_path = config["ledger_path"]
     ledger = observatory_repos.load_lifecycle_ledger(ledger_path)
     histories = observatory_repos.load_repository_histories(REPO_ROOT, config["lifecycle"], ledger)
-    qualified_identities = {
-        (history.display_name, history.slug) for history in histories.values() if history.qualified
-    }
+    qualified_histories = [history for history in histories.values() if history.qualified]
     page_identities, derived_identities = observatory_repos.existing_repository_identities(
         REPO_ROOT
+    )
+    # The derived corpus is frozen while repo pages are disabled, so an upstream rename
+    # observed in later raw weeks (same stable ID) resolves to the frozen identity it was
+    # published under. Any other drift still fails the exact set comparison below.
+    qualified_identities = observatory_repos.published_identities(
+        qualified_histories, derived_identities
     )
     assert config["enabled"] is False
     # Derived history retains every qualified repository, while BR-003 limits the
@@ -570,8 +810,15 @@ def test_frozen_corpus_lifecycle_seed_has_expected_parity() -> None:
     # After the identity backfill + rename-consolidation regeneration: 270 - 7 stale
     # + 3 consolidated-elsewhere = 266 qualified identities (some renames/ownership
     # transfers merged into an already-existing identity rather than needing a new one).
+    assert len(qualified_histories) == 266
     assert len(qualified_identities) == 266
     assert qualified_identities == derived_identities
+    for history in qualified_histories:
+        frozen_name, frozen_slug = observatory_repos.published_identity(history, derived_identities)
+        if (frozen_name, frozen_slug) != (history.display_name, history.slug):
+            assert history.github_id is not None
+            assert frozen_name in history.prior_full_names
+            assert frozen_slug in history.prior_slugs
     approved = json.loads(
         (REPO_ROOT / "data/migrations/repository-approved-dispositions.json").read_text(
             encoding="utf-8"
@@ -583,9 +830,9 @@ def test_frozen_corpus_lifecycle_seed_has_expected_parity() -> None:
         if record["url_type"] == "canonical" and record["disposition"] == "keep"
     }
     retained_identities = {
-        (history.display_name, history.slug)
+        observatory_repos.published_identity(history, derived_identities)
         for history in histories.values()
-        if history.slug in retained_slugs
+        if observatory_repos.published_identity(history, derived_identities)[1] in retained_slugs
     }
     assert page_identities == retained_identities
 
