@@ -109,6 +109,21 @@ it. The podcast auto-dispatch dedup then skipped W41, which already had an episo
 
 ## Troubleshooting
 
+- **`Lockfile` blocks a weekly sync:** run `python3 scripts/check_dependency_lock.py`
+  from a clean checkout with Python 3.12. The gate asks pip to resolve
+  only the roots in `requirements.txt`, using `requirements.lock` as constraints,
+  then compares the complete resolved closure with the lock. Missing, orphaned,
+  or changed packages and conflicting requirements fail.
+  A new release on PyPI alone must not invalidate a reviewed lock or block publishing.
+  Dependency upgrades are separate reviewed changes to the lock, not part of the
+  weekly generated-data sync. The sync installs that same lock and keys its pip
+  cache on it. CI audits those exact deployed pins with strict failure on packages
+  that cannot be audited; vulnerabilities remain blocking. Keep the dependency
+  audit and required checks enabled.
+  After the fix is reviewed and merged, rerun `sync-publish-to-main.yml`; inspect
+  its resulting auto-dispatch before manually triggering a podcast. If manual
+  recovery is necessary, use `trigger-podcast.yml` with the original crawl run ID
+  and week, never a new publication identity for an existing episode.
 - **`Invalid keyData` or `ERR_OSSL_ASN1_NOT_ENOUGH_DATA` in `Mint publish-sync GitHub App
   token`:** `PUBLISH_SYNC_APP_PRIVATE_KEY` is not a full PEM private key. Usually it holds an
   OAuth client secret, or a paste that kept only the first line. Generate a private key (step 3),
