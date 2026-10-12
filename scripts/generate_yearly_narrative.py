@@ -8,6 +8,10 @@ includes:
 - Meta description summaries (≤155 chars) extracted from narrative opening
 - Cross-links to each contributing monthly report
 - Structured frontmatter: months_covered, format, summary, categories
+
+Monthly chapters reserve summary space for the last available weekly source
+before selecting context. Monthly synthesis and budget-retained earlier reports
+are not chronological endpoints; prose does not infer a shift from their order.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from scripts.sanitize_repo_content import INJECTION_PHRASES
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONTENT_ROOT = PROJECT_ROOT / "content"
 MONTH_SECTION_PATTERN = re.compile(r"(?m)^##\s+(.+?)\s*$")
-WEEK_BLOCK_PATTERN = re.compile(r"(?ms)^###\s+.+?\s*$\n(.*?)(?=^###\s+|\Z)")
+WEEK_BLOCK_PATTERN = re.compile(r"(?ms)^###\s+(?P<heading>.+?)\s*$\n(?P<body>.*?)(?=^###\s+|\Z)")
 LINK_PATTERN = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 WORD_PATTERN = re.compile(r"\S+")
 HEADING_LINE_PATTERN = re.compile(r"(?m)^#+\s+")
@@ -110,6 +114,7 @@ class MonthSnapshot:
     gaps: tuple[str, ...]
     closing_reads: tuple[str, ...]
     synthesis_paragraphs: tuple[str, ...] = ()
+    weekly_summaries: tuple[str, ...] | None = None
 
     @property
     def month_name(self) -> str:
@@ -441,15 +446,29 @@ def extract_prose_paragraphs(body: str) -> tuple[str, ...]:
     return tuple(paragraphs)
 
 
-def extract_labeled_values(section_body: str, label: str) -> list[str]:
+def extract_labeled_values(
+    section_body: str, label: str, *, chronological: bool = False
+) -> list[str]:
     values: list[str] = []
-    for block in WEEK_BLOCK_PATTERN.finditer(section_body):
-        for line in block.group(1).splitlines():
+    blocks = list(WEEK_BLOCK_PATTERN.finditer(section_body))
+    if chronological:
+        dated_blocks = []
+        for block in blocks:
+            week = re.match(r"Week\s+(\d{4})-W(\d{2})\b", block.group("heading"))
+            if week:
+                dated_blocks.append(((int(week[1]), int(week[2])), block))
+        blocks = [block for _, block in sorted(dated_blocks, key=lambda item: item[0])]
+    for block in blocks:
+        block_start = len(values)
+        for line in block.group("body").splitlines():
             if not line.startswith(f"- {label}:"):
                 continue
             value = strip_markdown(line.split(":", 1)[1])
-            if value:
+            if value or chronological:
                 values.append(value)
+        if chronological and len(values) == block_start:
+            # A week without this label must still occupy its chronological slot.
+            values.append("")
     return values
 
 
@@ -475,9 +494,11 @@ def frontmatter_list(frontmatter: dict[str, Any], key: str) -> list[str]:
 def load_month_snapshot(path: Path) -> MonthSnapshot:
     frontmatter, body = analysis_gate.extract_frontmatter(path.read_text(encoding="utf-8"))
     sections = split_sections(body)
+    weekly_summaries = extract_labeled_values(
+        sections.get("Month Overview", ""), "Summary", chronological=True
+    )
     month_synthesis = strip_markdown(sections.get("Month Synthesis", ""))
     if month_synthesis:
-        weekly_summaries = extract_labeled_values(sections.get("Month Overview", ""), "Summary")
         summaries = dedupe_preserving_order(
             [str(frontmatter.get("summary", "")).strip(), *weekly_summaries]
         )
@@ -530,6 +551,7 @@ def load_month_snapshot(path: Path) -> MonthSnapshot:
             noise=noise,
             gaps=gaps,
             closing_reads=closing_reads,
+            weekly_summaries=tuple(weekly_summaries),
         )
 
     themes: list[str] = []
@@ -551,6 +573,7 @@ def load_month_snapshot(path: Path) -> MonthSnapshot:
         closing_reads=tuple(
             extract_labeled_values(sections.get("Key Takeaways", ""), "Closing read")
         ),
+        weekly_summaries=tuple(weekly_summaries),
     )
 
 
@@ -596,6 +619,7 @@ def load_month_snapshot_with_preference(path: Path, content_root: Path) -> Month
         gaps=snapshot.gaps,
         closing_reads=snapshot.closing_reads,
         synthesis_paragraphs=synthesis_paragraphs,
+        weekly_summaries=snapshot.weekly_summaries,
     )
 
 
@@ -927,24 +951,30 @@ def sentence_case(text: str) -> str:
 def build_month_chapter(month: MonthSnapshot, word_limit: int) -> str:
     paragraphs: list[str] = []
     style = (month.month - 1) % 4
-    summaries = complete_sentences(month.summaries, min(85, word_limit // 2))
-    if summaries:
+    summary_budget = min(85, word_limit // 2)
+    weekly_summaries = (
+        month.weekly_summaries if month.weekly_summaries is not None else month.summaries
+    )
+    # Preserve source chronology before budgeting; never promote a retained
+    # earlier sentence (or monthly synthesis) to the latest weekly report.
+    latest = (
+        complete_sentences([weekly_summaries[-1]], summary_budget)[:1] if weekly_summaries else []
+    )
+    remaining = summary_budget - sum(word_count(sentence) for sentence in latest)
+    context_summary = complete_sentences(month.summaries[:1], remaining)[:1]
+    opening_parts = []
+    if context_summary and context_summary != latest:
         opening_templates = (
-            f"{month.month_name} opened with a clear baseline: {{summary}}",
-            f"The first useful reading of {month.month_name} was direct: {{summary}}",
-            f"In {month.month_name}, the monthly record began here: {{summary}}",
-            f"{month.month_name}'s reports initially pointed to one conclusion: {{summary}}",
+            f"{month.month_name}'s reports supplied this context: {{summary}}",
+            f"The record for {month.month_name} supplied this context: {{summary}}",
+            f"In {month.month_name}, the monthly record noted: {{summary}}",
+            f"{month.month_name}'s available record pointed to this: {{summary}}",
         )
-        opening = opening_templates[style].format(summary=summaries[0])
-        if len(summaries) > 1:
-            transitions = (
-                "The final weekly report sharpened that picture:",
-                "By the latest weekly report, the emphasis had shifted:",
-                "The closing report changed the balance:",
-                "The last weekly read made the constraint clearer:",
-            )
-            opening += f" {transitions[style]} {summaries[-1]}"
-        paragraphs.append(opening)
+        opening_parts.append(opening_templates[style].format(summary=context_summary[0]))
+    if latest:
+        opening_parts.append(f"The latest available weekly summary reported: {latest[0]}")
+    if opening_parts:
+        paragraphs.append(" ".join(opening_parts))
 
     themes = short_labels(month.themes)
     context = ""
@@ -1013,7 +1043,7 @@ def build_month_chapter(month: MonthSnapshot, word_limit: int) -> str:
             if noise:
                 risk_parts.append(f"The period still carried noise from {noise_values}.")
             if gaps:
-                risk_parts.append(f"It closed with concrete gaps: {gap_values}")
+                risk_parts.append(f"The reports recorded concrete gaps: {gap_values}")
         risk = " ".join(risk_parts) + " The annual interpretation therefore remains provisional."
 
     opening = paragraphs[0] if paragraphs else ""
@@ -1021,14 +1051,16 @@ def build_month_chapter(month: MonthSnapshot, word_limit: int) -> str:
         paragraphs = [opening, " ".join(part for part in (context, evidence) if part), risk]
     elif style == 1:
         paragraphs = [
-            " ".join(part for part in (opening, risk) if part),
+            opening,
+            risk,
             " ".join(part for part in (evidence, context) if part),
         ]
     elif style == 2:
         paragraphs = [opening, evidence, " ".join(part for part in (context, risk) if part)]
     else:
         paragraphs = [
-            " ".join(part for part in (opening, evidence) if part),
+            opening,
+            evidence,
             " ".join(part for part in (context, risk) if part),
         ]
     paragraphs = [paragraph for paragraph in paragraphs if paragraph]
