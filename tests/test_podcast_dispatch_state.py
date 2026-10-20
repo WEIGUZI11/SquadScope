@@ -1,3 +1,4 @@
+import http.client
 import json
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -111,6 +112,63 @@ class PodcastDispatchStateTests(unittest.TestCase):
                 payload={"title": "incident"},
             )
         self.assertEqual(post.call_args.args[0].get_header("Content-type"), "application/json")
+
+    def test_github_get_retries_transient_read_errors_but_post_does_not(self) -> None:
+        good = mock.MagicMock()
+        good.__enter__.return_value.read.return_value = b'{"ok": true}'
+        flaky = [http.client.IncompleteRead(b"x", 5), ConnectionResetError(), good]
+        with (
+            mock.patch.object(state.time, "sleep"),
+            mock.patch.object(state.request, "urlopen", side_effect=flaky) as urlopen,
+        ):
+            self.assertEqual(state._github_json("https://api.github.com/x", "t"), {"ok": True})
+        self.assertEqual(urlopen.call_count, 3)
+
+        with (
+            mock.patch.object(state.time, "sleep"),
+            mock.patch.object(
+                state.request, "urlopen", side_effect=http.client.IncompleteRead(b"x", 5)
+            ) as post,
+        ):
+            with self.assertRaises(http.client.IncompleteRead):
+                state._github_json("https://api.github.com/x", "t", method="POST", payload={})
+        self.assertEqual(post.call_count, 1)
+
+    def test_github_get_retry_handles_wrapped_errors_and_respects_deadline(self) -> None:
+        good = mock.MagicMock()
+        good.__enter__.return_value.read.return_value = b"[]"
+        wrapped = state.error.URLError(ConnectionResetError())
+        with (
+            mock.patch.object(state.time, "sleep"),
+            mock.patch.object(state.request, "urlopen", side_effect=[wrapped, good]) as urlopen,
+        ):
+            self.assertEqual(state._github_json("https://api.github.com/x", "t"), [])
+        self.assertEqual(urlopen.call_count, 2)
+
+        http_error = state.error.HTTPError("https://api.github.com/x", 500, "boom", {}, None)
+        with (
+            mock.patch.object(state.time, "sleep"),
+            mock.patch.object(state.request, "urlopen", side_effect=http_error) as urlopen,
+        ):
+            with self.assertRaises(state.error.HTTPError):
+                state._github_json("https://api.github.com/x", "t")
+        self.assertEqual(urlopen.call_count, 1)
+
+        with (
+            mock.patch.object(state.time, "sleep") as sleep,
+            mock.patch.object(
+                state.request, "urlopen", side_effect=http.client.IncompleteRead(b"x", 5)
+            ) as urlopen,
+        ):
+            with self.assertRaises(http.client.IncompleteRead):
+                state._github_json(
+                    "https://api.github.com/x",
+                    "t",
+                    deadline=10.0,
+                    monotonic=lambda: 9.5,
+                )
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
 
     def test_retry_classification_is_monotonic(self) -> None:
         self.assertEqual(
