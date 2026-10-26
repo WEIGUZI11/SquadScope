@@ -1,6 +1,6 @@
 {
   "week": "2026-W43",
-  "crawled_at": "2026-10-19T04:22:28Z",
+  "crawled_at": "2026-10-19T04:22:25Z",
   "new_repos": [
     {
       "id": 1416386910,
@@ -739,12 +739,12 @@
       "full_name": "seedds/nxnative",
       "description": "Switch games running natively on iPhone, iPad and Mac: an NSP folder becomes an unsigned IPA (NSO rewriter, Horizon HLE host, NVN→Metal)",
       "language": "C",
-      "stars": 448,
+      "stars": 447,
       "forks": 103,
       "archived": false,
       "disabled": false,
       "created_at": "2026-10-13T05:20:14Z",
-      "updated_at": "2026-10-19T04:22:27Z",
+      "updated_at": "2026-10-19T04:19:25Z",
       "pushed_at": "2026-10-19T03:13:35Z",
       "topics": [],
       "license": "MIT",
@@ -6046,12 +6046,12 @@
       "full_name": "openclaw/openclaw",
       "description": "The AI that really does things. Any OS. Any Platform. The lobster way. 🦞 ",
       "language": "TypeScript",
-      "stars": 392418,
+      "stars": 392417,
       "forks": 82487,
       "archived": false,
       "disabled": false,
       "created_at": "2025-11-24T10:16:47Z",
-      "updated_at": "2026-10-19T04:22:36Z",
+      "updated_at": "2026-10-19T04:22:23Z",
       "pushed_at": "2026-10-19T04:22:29Z",
       "topics": [
         "ai",
@@ -6169,12 +6169,12 @@
       "full_name": "morluto/rea",
       "description": "Reverse engineer anything with agents, from app behavior down to native binaries.",
       "language": "TypeScript",
-      "stars": 324837,
+      "stars": 324835,
       "forks": 82273,
       "archived": false,
       "disabled": false,
       "created_at": "2026-04-14T00:51:32Z",
-      "updated_at": "2026-10-19T04:22:35Z",
+      "updated_at": "2026-10-19T04:22:15Z",
       "pushed_at": "2026-10-19T04:08:47Z",
       "topics": [
         "agent-skills",
@@ -8996,7 +8996,7 @@
       "disabled": false,
       "created_at": "2026-03-17T03:28:57Z",
       "updated_at": "2026-10-19T04:21:45Z",
-      "pushed_at": "2026-10-19T04:22:34Z",
+      "pushed_at": "2026-10-19T04:21:59Z",
       "topics": [
         "ade",
         "agent-ide",
@@ -11270,12 +11270,12 @@
       "full_name": "code-yeongyu/oh-my-openagent",
       "description": "OmO: Just type \"mass ulw\" keyword with your prompt. Now you are the master of graph engineering.",
       "language": "TypeScript",
-      "stars": 70173,
+      "stars": 70172,
       "forks": 5772,
       "archived": false,
       "disabled": false,
       "created_at": "2025-12-03T01:40:05Z",
-      "updated_at": "2026-10-19T04:22:34Z",
+      "updated_at": "2026-10-19T04:20:04Z",
       "pushed_at": "2026-10-19T04:20:21Z",
       "topics": [
         "ai",
@@ -11570,12 +11570,12 @@
       "full_name": "storytold/photocraft",
       "description": "PhotoCraft: An open-source, photo editor written by scratch in pure Rust",
       "language": "Rust",
-      "stars": 67652,
+      "stars": 67651,
       "forks": 11917,
       "archived": false,
       "disabled": false,
       "created_at": "2026-09-30T13:37:48Z",
-      "updated_at": "2026-10-19T04:22:38Z",
+      "updated_at": "2026-10-19T04:21:20Z",
       "pushed_at": "2026-10-19T03:29:05Z",
       "topics": [
         "art",
@@ -13300,11 +13300,11 @@
     "cache_hits": 0,
     "stale_cache_hits": 0,
     "rate_limit_limit": 5000,
-    "rate_limit_remaining": 4544,
-    "rate_limit_reset": 1792387343,
+    "rate_limit_remaining": 4545,
+    "rate_limit_reset": 1792387357,
     "rate_limit_resource": "core",
     "partial_failures": [],
-    "run_id": "39199126887",
+    "run_id": "39199118589",
     "crawl_window": {
       "since": "2026-10-12",
       "until": "2026-10-19"
@@ -13331,6 +13331,6 @@
     "snapshot_path": "data/snapshots/2026-W43-stars.json",
     "source_refresh_policy": "reuse-same-day",
     "crawler_code_sha": "7fba46f208cd88d7c4fc9f1afe3fe07fa781f99b9164f16af736a550de1b9aca",
-    "artifact_checksum": "6ae94e7ffb8fe7cd9fc4b20b9bcfae947cdcf0ca3f7bc896cd74817c5e32f2e9"
+    "artifact_checksum": "a296ec363eb1af704c5a6993a28cce74f8936b2ee6422350f541285cd732d7b8"
   }
 }
